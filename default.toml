@@ -1,0 +1,42 @@
+###############################################
+## This is default daemon configuration file ##
+###############################################
+## `NOTE:` signs is just a dev notes that can help with thinking of implemetation
+
+[Daemon]
+schedule = 30
+units = "m" # can also be m or s
+shuffle = true
+## Here only directories supported!
+path = "~/Pictures/wallpapers/"
+## Here you choose what interfaces is used from program startup, can be empty, in that case daemon will just sleep
+## until user activates at least one of accessible interface declared in [Interfaces section]
+active_interfaces = ["hyprpanel"]
+
+## NOTE: EVERY interface MUST be saved, so it is accessible from client program
+[Interfaces]
+## For interface you provide program arguments as a list
+## %f for image file passed by daemon when changing wallpaper
+## In help message will appear option for enabling or disabling this interface
+hyprpanel = ["hyprpanel", "setWallpaper", "%f"]
+## Here %transition_type:transition_types means that user provides swww's transition-type via client program, and
+## transition_type valid values are that are declared in transition_types variable %transition_fps represents
+## just static variable that is not (yet) possible to change unless there is a change in config AND reboot
+#swww = ["swww", "img", "--transition-type", "%transition_type:transition_types", "--transition-fps", "%transition_fps", "%f"]
+
+# TODO: Consider slightly different layout for interfaces:
+#[Interfaces.swww]
+#args = [
+#    "swww", "img",
+#    "--transition-type", "%transition_type",
+#    "--transition-fps", "%transition_fps",
+#    "%f"
+#]
+#
+#[Interfaces.swww.variables]
+#transition_fps = 30
+#
+#[Interfaces.swww.variables.transition_type]
+#current = "grow"
+#options = ["grow", "wipe", "outer"]
+
