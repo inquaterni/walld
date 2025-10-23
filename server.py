@@ -29,13 +29,15 @@ from toml_config import parse_config
 
 
 def logger_setup(logger: Logger):
+    logger.propagate = False
+    logger.handlers.clear()
     handler = SysLogHandler("/dev/log", SysLogHandler.LOG_LOCAL1)
-    formatter = Formatter("[%(asctime)s %(levelname)s] %(name)s: %(message)s")
+    formatter = Formatter("[%(levelname)s] %(name)s: %(message)s")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
+    logger.setLevel(INFO)
 
 
-basicConfig(level=INFO)
 logger = getLogger(__name__)
 logger_setup(logger)
 
