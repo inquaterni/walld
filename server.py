@@ -1,20 +1,18 @@
 #!/usr/bin/env python
-from logging import Formatter, handlers
+from logging import Formatter
 
 # TODO: 1. Implement async interface methods
-#       2. Implement proper logging to journald
-#       3. Handle D-Bus connection failures
-#       4. Provide status information via D-Bus properties
+#       2. Handle D-Bus connection failures
+#       3. Provide status information via D-Bus properties
 from os.path import expanduser
 from subprocess import run
 from threading import Thread
 from dasbus.server.interface import dbus_interface
 from dasbus.typing import Str, Int, List, Bool
-from dasbus.loop import EventLoop
-from logging import Logger, getLogger, basicConfig, INFO
+from dasbus.loop import EventLoop, GLib
+from logging import Logger, getLogger, INFO
 from logging.handlers import SysLogHandler
 from config import SERVICE
-from schedule import Job, every, run_pending, cancel_job
 from time import sleep
 from os import urandom
 from random import Random
@@ -46,7 +44,7 @@ logger_setup(logger)
 class WallDaemon(object):
     def __init__(self):
         self._is_running = False
-        self._scheduled_task: Job | None = None
+        self._timer_id = None
         self._current_index = 0
         self._loop = EventLoop()
         self._logger = getLogger(__class__.__name__)
@@ -64,27 +62,32 @@ class WallDaemon(object):
     ############################
 
     def SetSchedule(self, schedule: Int, units: Str) -> Str:
-        if self._is_running:
-            if self._scheduled_task is not None:
-                cancel_job(self._scheduled_task)
-        else:
+        if not self._is_running:
             raise ServerNotRunningError()
 
+        if self._timer_id:
+            GLib.source_remove(self._timer_id)
+            self._timer_id = None
+
+        timeout = 0
         match units:
             case "s":
-                self._scheduled_task = every(schedule).seconds.do(
-                    self._set_next_wallpaper
-                )
+                timeout = schedule
             case "m":
-                self._scheduled_task = every(schedule).minutes.do(
-                    self._set_next_wallpaper
-                )
+                timeout = schedule * 60
             case "h":
-                self._scheduled_task = every(schedule).hours.do(
-                    self._set_next_wallpaper
-                )
+                timeout = schedule * 3600
             case _:
                 raise UnknownTimeUnitsError()
+
+        def timer_callback():
+            self._logger.info("Timeout reached, setting next wallpaper")
+            self._set_next_wallpaper()
+            return GLib.SOURCE_CONTINUE
+
+        if timeout > 0:
+            self._timer_id = GLib.timeout_add_seconds(timeout, timer_callback)
+            self._logger.info(f"Schedule set for {schedule} {units}.")
 
         return "OK"
 
@@ -160,7 +163,6 @@ class WallDaemon(object):
     def run(self, config_path: str):
         self.config = parse_config(config_path)
         self._is_running = True
-        Thread(target=self._poll_sync, daemon=True).start()
         # TODO: add backing private method
         self.SetSchedule(self.config.schedule, self.config.units.value)
         self._loop.run()
@@ -189,9 +191,11 @@ class WallDaemon(object):
                         self._shuffle_indexes = self._generate_shuffle_indexes()
 
                     index = self._shuffle_indexes[self._current_index]
-                    self._set_wallpaper(index)
+                    Thread(target=self._set_wallpaper, args=(index,)).start()
                 else:
-                    self._set_wallpaper(self._current_index)
+                    Thread(
+                        target=self._set_wallpaper, args=(self._current_index,)
+                    ).start()
 
                 self._current_index = (self._current_index + 1) % len(self.config.files)
 
@@ -203,11 +207,6 @@ class WallDaemon(object):
                 ),
                 check=False,
             )
-
-    def _poll_sync(self) -> None:
-        while self._is_running:
-            run_pending()
-            sleep(1)
 
 
 def main():
