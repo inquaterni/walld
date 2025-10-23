@@ -1,27 +1,43 @@
 #!/usr/bin/env python
-from os.path import expanduser
-from subprocess import run
+from logging import Formatter, handlers
 
 # TODO: 1. Implement async interface methods
 #       2. Implement proper logging to journald
 #       3. Handle D-Bus connection failures
 #       4. Provide status information via D-Bus properties
+from os.path import expanduser
+from subprocess import run
 from threading import Thread
 from dasbus.server.interface import dbus_interface
 from dasbus.typing import Str, Int, List, Bool
 from dasbus.loop import EventLoop
-from logging import getLogger, basicConfig, INFO
+from logging import Logger, getLogger, basicConfig, INFO
+from logging.handlers import SysLogHandler
 from config import SERVICE
 from schedule import Job, every, run_pending, cancel_job
 from time import sleep
 from os import urandom
 from random import Random
 
+from errors import (
+    InvalidInterfaceNameError,
+    NoFilesProvidedError,
+    ServerNotRunningError,
+    UnknownTimeUnitsError,
+)
 from toml_config import parse_config
+
+
+def logger_setup(logger: Logger):
+    handler = SysLogHandler("/dev/log", SysLogHandler.LOG_LOCAL1)
+    formatter = Formatter("[%(asctime)s %(levelname)s] %(name)s: %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 
 basicConfig(level=INFO)
 logger = getLogger(__name__)
+logger_setup(logger)
 
 
 @dbus_interface(SERVICE.interface_name)
@@ -32,6 +48,7 @@ class WallDaemon(object):
         self._current_index = 0
         self._loop = EventLoop()
         self._logger = getLogger(__class__.__name__)
+        logger_setup(self._logger)
 
         # 4 bytes hardware based random, used once for seed
         self._seed = urandom(4)
@@ -49,7 +66,7 @@ class WallDaemon(object):
             if self._scheduled_task is not None:
                 cancel_job(self._scheduled_task)
         else:
-            return "ERROR: Server is not running"
+            raise ServerNotRunningError()
 
         match units:
             case "s":
@@ -64,12 +81,16 @@ class WallDaemon(object):
                 self._scheduled_task = every(schedule).hours.do(
                     self._set_next_wallpaper
                 )
+            case _:
+                raise UnknownTimeUnitsError()
 
         return "OK"
 
     def SetFiles(self, files: List[Str]) -> Str:
         if not self._is_running:
-            return "ERROR: server is not running"
+            raise ServerNotRunningError()
+        if len(files) == 0:
+            raise NoFilesProvidedError()
 
         self.config.files = files
         self._recalc_current_index(len(self.config.files))
@@ -78,18 +99,57 @@ class WallDaemon(object):
 
     def SetShuffle(self, shuffle: Bool) -> Str:
         if not self._is_running:
-            return "ERROR: server is not running"
+            raise ServerNotRunningError()
         self.config.shuffle = shuffle
-        if self.shuffle:
+        if self.config.shuffle:
             self._shuffle_indexes = self._generate_shuffle_indexes()
 
         return "OK"
 
     def GetInterfaces(self) -> List[Str]:
         if not self._is_running:
-            return ["ERROR: server is not running"]
+            raise ServerNotRunningError()
 
         return list(map(lambda x: x.name, self.config.ifaces))
+
+    def GetActiveInterfaces(self) -> List[Str]:
+        if not self._is_running:
+            raise ServerNotRunningError()
+        return list(
+            map(
+                lambda x: x.name,
+                (self.config.ifaces[index] for index in self.config.active_ifaces),
+            )
+        )
+
+    def ActivateInterface(self, name: Str) -> Str:
+        if not self._is_running:
+            raise ServerNotRunningError()
+        if name not in map(lambda x: x.name, self.config.ifaces):
+            raise InvalidInterfaceNameError()
+        for index, iface in enumerate(self.config.ifaces):
+            if iface.name != name:
+                continue
+            if index in self.config.active_ifaces:
+                return "Interface already active."
+            self.config.active_ifaces.append(name)
+
+        return "OK"
+
+    def DeactivateInterface(self, name: Str) -> Str:
+        if not self._is_running:
+            raise ServerNotRunningError()
+        if name not in map(lambda x: x.name, self.config.ifaces):
+            return "Interface is inactive."
+        for index, iface in enumerate(self.config.ifaces):
+            if iface.name != name:
+                continue
+            if index in self.config.active_ifaces:
+                self.config.active_ifaces.remove(index)
+            else:
+                raise InvalidInterfaceNameError()
+
+        return "OK"
 
     ###################
     ## CLASS METHODS ##
@@ -116,12 +176,10 @@ class WallDaemon(object):
         return indexes
 
     def _set_next_wallpaper(self):
-        self._logger.info("Setting wallpaper")
         if not self._is_running:
             return
         else:
             if not self.config.files:
-                self._logger.info("No files available")
                 return
             else:
                 if self.config.shuffle:
@@ -172,6 +230,7 @@ def main():
         logger.error(f"Error: {e}")
     finally:
         logger.info("Closing Session Message Bus.")
+        SERVICE.message_bus.disconnect()
 
 
 if __name__ == "__main__":

@@ -1,167 +1,148 @@
 #!/usr/bin/env python3
 import argparse
-from dasbus.connection import SessionMessageBus
+from dasbus.error import DBusError
+
 from config import SERVICE
 
 
-def fetch_daemon_config_help():
-    try:
-        bus = SessionMessageBus()
-        proxy = bus.get_proxy(SERVICE.interface_name, SERVICE.object_path)
-        interfaces = proxy.GetInterfaces()
-        variables = proxy.GetVariables()
+# class CustomHelpFormatter(argparse.RawDescriptionHelpFormatter):
+#     def format_help(self):
+#         help_text = super().format_help()
+# try:
+#     proxy = SERVICE.message_bus.get_proxy(SERVICE.service_name, SERVICE.object_path)
+# interfaces = proxy.GetInterfaces()
 
-        help_text = "CONFIG (fetched from daemon):\n"
-
-        if not interfaces and not variables:
-            return help_text + "  (Daemon is running, but no dynamic interfaces or variables are configured)\n"
-
-        if interfaces:
-            help_text += "  Available Interfaces:\n"
-            for iface in interfaces:
-                help_text += f"    - {iface}\n"
-
-        if variables:
-            if interfaces: help_text += "\n"
-            help_text += "  Configurable Variables:\n"
-            for var in variables:
-                help_text += f"    - {var}\n"
-
-        return help_text
-
-    except Exception:
-        return "CONFIG:\n  (Daemon not running. Run daemon to see available interfaces and variables)\n"
+#     help_text += "\n+------------------------------------------+\n"
+#     help_text += "| " + "INTERFACES".center(40) + " |"
+#     help_text += "\n+------------------------------------------+\n"
+#     if interfaces and "ERROR:" not in interfaces[0]:
+#         for iface_name in interfaces:
+#             help_text += f"    - {iface_name}\n"
+#     elif interfaces:
+#         help_text += f"    (Server running but reported: {interfaces[0]})\n"
+#     else:
+#         help_text += "    (No interfaces reported by server)\n"
+# except DBusError as e:
+#     help_text += "\n+------------------------------------------+\n"
+#     help_text += "| " + "INTERFACES".center(40) + " |"
+#     help_text += "\n+------------------------------------------+\n"
+#     help_text += f"    (Could not connect to D-Bus service: {e.name})\n"
+# except Exception:
+#     help_text += "\n+------------------------------------------+\n"
+#     help_text += "| " + "INTERFACES".center(40) + " |"
+#     help_text += "\n+------------------------------------------+\n"
+#     help_text += "    (Could not connect to D-Bus service to list interfaces)\n"
+# return help_text
 
 
 def main():
-    config_help = fetch_daemon_config_help()
-
     parser = argparse.ArgumentParser(
-        description="Wallpaper Daemon Client",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"""
-{config_help}
-Examples:
-  %(prog)s --schedule 30 --units m
-  %(prog)s --files /path/to/img1.jpg /path/to/img2.png
-  %(prog)s --shuffle true
-  %(prog)s --activate swww --set-var transition_type grow
-  %(prog)s --deactivate hyprpanel
-  %(prog)s --next
-        """
+        description="Command-line client for the WallD D-Bus service.",
     )
 
-    parser.add_argument(
-        "--schedule",
-        type=int,
-        metavar="N",
-        help="Set schedule interval (requires --units)"
+    subparsers = parser.add_subparsers(
+        dest="command", required=True, help="Action to perform"
     )
 
-    parser.add_argument(
-        "--units",
+    schedule_parser = subparsers.add_parser(
+        "schedule", help="Set the wallpaper rotation schedule."
+    )
+    schedule_parser.add_argument("value", type=int, help="Number of units")
+    schedule_parser.add_argument(
+        "units",
         choices=["s", "m", "h"],
-        help="Time units for schedule: s (seconds), m (minutes), h (hours)"
+        help="Time units (s=seconds, m=minutes, h=hours)",
     )
 
-    parser.add_argument(
-        "--files",
-        nargs="+",
-        metavar="FILE",
-        help="Set wallpaper files list"
+    files_parser = subparsers.add_parser(
+        "files", help="Set the list of wallpaper files."
+    )
+    files_parser.add_argument(
+        "files", nargs="+", help="One or more paths to wallpaper files"
     )
 
-    parser.add_argument(
-        "--shuffle",
-        type=str,
-        choices=["true", "false", "on", "off", "1", "0", "yes", "no"],
-        help="Enable or disable shuffle mode"
+    shuffle_parser = subparsers.add_parser(
+        "shuffle", help="Enable or disable shuffle mode."
+    )
+    shuffle_parser.add_argument(
+        "state", choices=["on", "off"], help="Turn shuffle 'on' or 'off'"
     )
 
-    parser.add_argument(
-        "--activate",
-        nargs="+",
-        metavar="IFACE",
-        help="Activate one or more interfaces (e.g., swww, hyprpanel)"
+    subparsers.add_parser(
+        "get-interfaces", help="List all interfaces defined in the server config."
     )
 
-    parser.add_argument(
-        "--deactivate",
-        nargs="+",
-        metavar="IFACE",
-        help="Deactivate one or more interfaces"
-    )
+    subparsers.add_parser("get-active-interfaces", help="List all active interfaces.")
 
-    parser.add_argument(
-        "--set-var",
-        nargs=2,
-        metavar=("KEY", "VALUE"),
-        help="Set a dynamic variable (e.g., --set-var transition_type wipe)"
+    activate_parser = subparsers.add_parser(
+        "activate-interface", help="Activate a defined interface."
     )
+    activate_parser.add_argument("name", help="Name of the interface to activate")
 
-    # parser.add_argument(
-    #     "--next",
-    #     action="store_true",
-    #     help="Change to the next wallpaper"
-    # )
+    deactivate_parser = subparsers.add_parser(
+        "deactivate-interface", help="Deactivate a defined interface."
+    )
+    deactivate_parser.add_argument("name", help="Name of the interface to deactivate")
 
     args = parser.parse_args()
 
-    if args.schedule and not args.units:
-        parser.error("--schedule requires --units")
-
-    if args.units and not args.schedule:
-        parser.error("--units requires --schedule")
-
-    if args.schedule and args.schedule <= 0:
-        parser.error("--schedule must be a positive integer")
-
     try:
-        bus = SessionMessageBus()
-        proxy = bus.get_proxy(SERVICE.interface_name, SERVICE.object_path)
+        proxy = SERVICE.message_bus.get_proxy(SERVICE.service_name, SERVICE.object_path)
+    except DBusError as e:
+        print(f"Error: Could not connect to D-Bus service '{SERVICE.service_name}'.")
+        print(f"Details: {e.name}")
+        print("Is the walld server running?")
+        exit(1)
 
-        results = []
+    result = ""
+    try:
+        if args.command == "schedule":
+            result = proxy.SetSchedule(args.value, args.units)
 
-        if args.schedule is not None and args.units is not None:
-            result = proxy.SetSchedule(args.schedule, args.units)
-            results.append(f"Schedule: {result}")
-
-        if args.files is not None:
+        elif args.command == "files":
             result = proxy.SetFiles(args.files)
-            results.append(f"Files: {result}")
 
-        if args.shuffle is not None:
-            shuffle_bool = args.shuffle.lower() in ["true", "on", "1", "yes"]
-            result = proxy.SetShuffle(shuffle_bool)
-            results.append(f"Shuffle: {result}")
+        elif args.command == "shuffle":
+            result = proxy.SetShuffle(args.state == "on")
 
-        # if args.activate:
-        #     # Assumes daemon method is ActivateInterfaces(List[str])
-        #     result = proxy.ActivateInterfaces(args.activate)
-        #     results.append(f"Activated: {result}")
+        elif args.command == "get-interfaces":
+            interfaces = proxy.GetInterfaces()
+            if interfaces and "ERROR:" not in interfaces[0]:
+                print("Available interfaces:")
+                for iface in interfaces:
+                    print(f"- {iface}")
+            elif interfaces:
+                result = interfaces[0]
+            else:
+                print("No interfaces found.")
 
-        # if args.deactivate:
-        #     # Assumes daemon method is DeactivateInterfaces(List[str])
-        #     result = proxy.DeactivateInterfaces(args.deactivate)
-        #     results.append(f"Deactivated: {result}")
+        elif args.command == "get-active-interfaces":
+            interfaces = proxy.GetActiveInterfaces()
+            if interfaces and "ERROR:" not in interfaces[0]:
+                print("Active interfaces:")
+                for iface in interfaces:
+                    print(f"- {iface}")
+            elif interfaces:
+                result = interfaces[0]
+            else:
+                print("No active interfaces.")
 
-        # if args.set_var:
-        #     key, value = args.set_var
-        #     result = proxy.SetVariable(key, value)
-        #     results.append(f"Variable '{key}': {result}")
-        # if args.next:
-        #     result = proxy.NextWallpaper()
-        #     results.append(f"Next Wallpaper: {result}")
+        elif args.command == "activate-interface":
+            result = proxy.ActivateInterface(args.name)
 
-        if results:
-            for res in results:
-                print(res)
-        else:
-            parser.print_help()
+        elif args.command == "deactivate-interface":
+            result = proxy.DeactivateInterface(args.name)
 
+        if result:
+            print(result)
+
+    except DBusError as e:
+        exit(1)
     except Exception as e:
-        print(f"Error communicating with service: {e}")
+        print(f"An unexpected error occurred: {e}")
+        exit(1)
 
 
 if __name__ == "__main__":
     main()
+
