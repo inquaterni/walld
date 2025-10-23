@@ -158,9 +158,9 @@ class WallDaemon(object):
     ###################
 
     def run(self, config_path: str):
+        self.config = parse_config(config_path)
         self._is_running = True
         Thread(target=self._poll_sync, daemon=True).start()
-        self.config = parse_config(config_path)
         # TODO: add backing private method
         self.SetSchedule(self.config.schedule, self.config.units.value)
         self._loop.run()
