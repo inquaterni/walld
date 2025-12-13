@@ -69,18 +69,38 @@ def main():
     )
 
     subparsers.add_parser(
-        "get-interfaces", help="List all interfaces defined in the server config."
+        "current-wallpaper", help="Get the current wallpaper filename."
     )
 
-    subparsers.add_parser("get-active-interfaces", help="List all active interfaces.")
+    subparsers.add_parser(
+        "list", help="List all interfaces defined in the server config."
+    )
+
+    interface_parser = subparsers.add_parser(
+        "interface", help="Choose interface for manipulation."
+    )
+
+    interface_parser.add_argument(
+        "interface_name", help="Interface name that contains desired variable"
+    )
+
+    interface_parser.add_argument(
+        "var_name", help="Choose variable to change its value."
+    )
+
+    interface_parser.add_argument(
+        "value", help="Value to use as new."
+    )
+
+    subparsers.add_parser("list-active", help="List all active interfaces.")
 
     activate_parser = subparsers.add_parser(
-        "activate-interface", help="Activate a defined interface."
+        "activate", help="Activate a defined interface."
     )
     activate_parser.add_argument("name", help="Name of the interface to activate")
 
     deactivate_parser = subparsers.add_parser(
-        "deactivate-interface", help="Deactivate a defined interface."
+        "deactivate", help="Deactivate a defined interface."
     )
     deactivate_parser.add_argument("name", help="Name of the interface to deactivate")
 
@@ -105,18 +125,27 @@ def main():
         elif args.command == "shuffle":
             result = proxy.SetShuffle(args.state == "on")
 
-        elif args.command == "get-interfaces":
+        elif args.command == "current-wallpaper":
+            result = proxy.GetCurrentWallpaperFilename()
+            # print(result)
+
+        elif args.command == "list":
             interfaces = proxy.GetInterfaces()
             if interfaces and "ERROR:" not in interfaces[0]:
                 print("Available interfaces:")
-                for iface in interfaces:
+                for iface, variables in interfaces:
                     print(f"- {iface}")
+                    if variables:
+                        print("\tMutable variables:")
+                        for var, current_value in variables:
+                            print(f"\t- {var}, value: `{current_value}`")
             elif interfaces:
                 result = interfaces[0]
             else:
                 print("No interfaces found.")
-
-        elif args.command == "get-active-interfaces":
+        elif args.command == "interface":
+            result = proxy.SetVariableValue(args.interface_name, args.var_name, args.value)
+        elif args.command == "list-active":
             interfaces = proxy.GetActiveInterfaces()
             if interfaces and "ERROR:" not in interfaces[0]:
                 print("Active interfaces:")
@@ -127,10 +156,10 @@ def main():
             else:
                 print("No active interfaces.")
 
-        elif args.command == "activate-interface":
+        elif args.command == "activate":
             result = proxy.ActivateInterface(args.name)
 
-        elif args.command == "deactivate-interface":
+        elif args.command == "deactivate":
             result = proxy.DeactivateInterface(args.name)
 
         if result:

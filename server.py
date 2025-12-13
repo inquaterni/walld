@@ -6,10 +6,10 @@
 from functools import wraps
 from os.path import expanduser
 from subprocess import run
-from typing import Callable
+from typing import Callable, Tuple, Union, Any
 
 from dasbus.server.interface import dbus_interface
-from dasbus.typing import Str, Int, List, Bool
+from dasbus.typing import Str, Int, List, Bool, Variant
 from gi import require_version
 
 require_version("GLib", "2.0")
@@ -27,9 +27,9 @@ from errors import (
     InvalidInterfaceNameError,
     NoFilesProvidedError,
     ServerNotRunningError,
-    UnknownTimeUnitsError,
+    UnknownTimeUnitsError, VariableDoesNotExistError, VariableTypeError,
 )
-from toml_config import parse_config
+from toml_config import parse_config, Constant, Var
 
 
 def logger_setup(logger: Logger):
@@ -56,6 +56,7 @@ def is_running(func: Callable):
     return wrapper
 
 
+# TODO: add ability to change enum variables through DBus interface
 @dbus_interface(SERVICE.interface_name)
 class WallDaemon(GObject.GObject):
     def __init__(self):
@@ -100,9 +101,43 @@ class WallDaemon(GObject.GObject):
         return "OK"
 
     @is_running
-    def GetInterfaces(self) -> List[Str]:
-        return list(item.name for item in self.config.interfaces)
+    def GetInterfaces(self) -> List[Tuple[Str, List[Tuple[Str, Str]]]]:
+        iface_indexes = list(index for index in range(len(self.config.ifaces)))
+        ifaces = []
+        for iface_index in iface_indexes:
+            iface = self.config.ifaces[iface_index]
+            variables = []
+            for name, var in iface.variables.items():
+                if type(var) is not Constant:
+                    variables.append((name, var.value().__str__()))
+            ifaces.append((iface.name, variables))
 
+        return ifaces
+
+    @is_running
+    def SetVariableValue(self, iface_name: Str, var_name: Str, value: Str) -> Str:
+        iface_indexes = tuple(index for index in range(len(self.config.ifaces)) if iface_name == self.config.ifaces[index].name)
+        if len(iface_indexes) > 1:
+            return "Unknown error."
+        if len(iface_indexes) < 1:
+            raise InvalidInterfaceNameError()
+
+        index = iface_indexes[0]
+        var = self.config.ifaces[index].variables.get(var_name)
+        val = self._deduce_var_type(var, value)
+        if not var:
+            raise VariableDoesNotExistError(var_name)
+
+        try:
+            var.set_value(val)
+        except ValueError:
+            raise VariableTypeError(type(var.value()), type(val))
+        else:
+            self._logger.info(f"Set variable `{var_name}` value `{value}`")
+            return "OK"
+
+
+    # TODO: send variables too
     @is_running
     def GetActiveInterfaces(self) -> List[Str]:
         return list(
@@ -135,6 +170,18 @@ class WallDaemon(GObject.GObject):
                 raise InvalidInterfaceNameError()
 
         return "OK"
+
+    @is_running
+    def GetCurrentWallpaperFilename(self) -> Str:
+        if self.config.shuffle:
+            if self._shuffle_indexes:
+                index = self._shuffle_indexes[self._current_index - 1]
+            else:
+                return "Wallpaper was not set yet."
+        else:
+            index = self._current_index
+
+        return self.config.files[index]
 
     ###################
     ## CLASS METHODS ##
@@ -237,10 +284,20 @@ class WallDaemon(GObject.GObject):
         except Exception as e:
             self._logger.exception(f"Could not set wallpaper: {e}")
 
+    @staticmethod
+    def _deduce_var_type(var: Var, value: Str) -> Any:
+        try:
+            val = type(var.value())(value)
+        except Exception:
+            raise VariableTypeError(type(var.value()), type(value))
+        else:
+            return val
+
 
 def main():
     # TODO: add program argument for config
-    config_path = expanduser("~/.config/walld/config.toml")
+    # config_path = expanduser("~/.config/walld/config.toml")
+    config_path = expanduser("~/python/walld/default.toml")
 
     loop = EventLoop()
 

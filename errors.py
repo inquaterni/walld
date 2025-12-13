@@ -27,3 +27,13 @@ class NoFilesProvidedError(DBusError):
 class InvalidInterfaceNameError(DBusError):
     def __init__(self, *args: object) -> None:
         super().__init__("Invalid interface name.", *args)
+
+@dbus_error(ERROR.interface_name + "VariableDoesNotExistError")
+class VariableDoesNotExistError(DBusError):
+    def __init__(self, var_name: str, *args: object):
+        super().__init__(f"Variable `{var_name}` does not exist", *args)
+
+@dbus_error(ERROR.interface_name + "VariableTypeError")
+class VariableTypeError(DBusError):
+    def __init__(self, var_type, arg_type, *args: object):
+        super().__init__(f"Variable of type {var_type} cannot be assigned with value of type {arg_type}.", *args)

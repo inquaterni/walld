@@ -11,7 +11,7 @@ shuffle = true
 path = "~/Pictures/wallpapers/"
 ## Here you choose what interfaces is used from program startup, can be empty, in that case daemon will just sleep
 ## until user activates at least one of accessible interface declared in [Interfaces section]
-active_interfaces = ["hyprpanel"]
+active_interfaces = ["swww"]
 
 ## NOTE: EVERY interface MUST be saved, so it is accessible from client program
 [Interfaces]
@@ -22,21 +22,28 @@ hyprpanel = ["hyprpanel", "setWallpaper", "%f"]
 ## Here %transition_type:transition_types means that user provides swww's transition-type via client program, and
 ## transition_type valid values are that are declared in transition_types variable %transition_fps represents
 ## just static variable that is not (yet) possible to change unless there is a change in config AND reboot
-#swww = ["swww", "img", "--transition-type", "%transition_type:transition_types", "--transition-fps", "%transition_fps", "%f"]
+#swww = ["swww", "img", "--transition-type", "%transition_type:transition_types", "--transition-fps", "%transition_fps", "%f"
 
-# TODO: Consider slightly different layout for interfaces:
-#[Interfaces.swww]
-#args = [
-#    "swww", "img",
-#    "--transition-type", "%transition_type",
-#    "--transition-fps", "%transition_fps",
-#    "%f"
-#]
-#
+[Interfaces.swww]
+args = [
+    "swww", "img",
+    "--transition-type", "%transition_type",
+    "--transition-fps", "%transition_fps",
+    "%f"
+]
+# Mutable variable, can be const
+[Interfaces.swww.variables.transition_fps]
+value = 30
+#const = true
+
+# Constant can be also declared this way
 #[Interfaces.swww.variables]
 #transition_fps = 30
-#
-#[Interfaces.swww.variables.transition_type]
-#current = "grow"
-#options = ["grow", "wipe", "outer"]
+
+# Enum type, cannot be constant
+[Interfaces.swww.variables.transition_type]
+current = "grow"
+options = ["grow", "wipe", "outer"]
+# TODO: Add support for that :)
+#random = true
 
