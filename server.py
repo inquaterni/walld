@@ -2,14 +2,13 @@
 
 # TODO: 1. Handle D-Bus connection failures
 #       2. Provide status information via D-Bus properties
-#       3. If possible fix `GLib-GIO-CRITICAL **: <time>: g_task_propagate_value: assertion 'task->result_destroy == value_free' failed`
 from functools import wraps
 from os.path import expanduser
 from subprocess import run
-from typing import Callable, Tuple, Union, Any
+from typing import Callable, Tuple, Any
 
 from dasbus.server.interface import dbus_interface
-from dasbus.typing import Str, Int, List, Bool, Variant
+from dasbus.typing import Str, Int, List, Bool
 from gi import require_version
 
 require_version("GLib", "2.0")
@@ -17,7 +16,7 @@ require_version("Gio", "2.0")
 require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, GObject
 from dasbus.loop import EventLoop
-from logging import Logger, getLogger, INFO, Formatter, DEBUG
+from logging import Logger, getLogger, Formatter, DEBUG
 from logging.handlers import SysLogHandler
 from config import SERVICE
 from os import urandom
@@ -57,6 +56,8 @@ def is_running(func: Callable):
 
 
 # TODO: add ability to change enum variables through DBus interface
+# TODO: implement get functionality
+# TODO: add more comprehensive errors
 @dbus_interface(SERVICE.interface_name)
 class WallDaemon(GObject.GObject):
     def __init__(self):
@@ -103,16 +104,7 @@ class WallDaemon(GObject.GObject):
     @is_running
     def GetInterfaces(self) -> List[Tuple[Str, List[Tuple[Str, Str]]]]:
         iface_indexes = list(index for index in range(len(self.config.ifaces)))
-        ifaces = []
-        for iface_index in iface_indexes:
-            iface = self.config.ifaces[iface_index]
-            variables = []
-            for name, var in iface.variables.items():
-                if type(var) is not Constant:
-                    variables.append((name, var.value().__str__()))
-            ifaces.append((iface.name, variables))
-
-        return ifaces
+        return self._pack_interfaces(iface_indexes)
 
     @is_running
     def SetVariableValue(self, iface_name: Str, var_name: Str, value: Str) -> Str:
@@ -136,13 +128,10 @@ class WallDaemon(GObject.GObject):
             self._logger.info(f"Set variable `{var_name}` value `{value}`")
             return "OK"
 
-
-    # TODO: send variables too
     @is_running
-    def GetActiveInterfaces(self) -> List[Str]:
-        return list(
-            self.config.ifaces[index].name for index in self.config.active_ifaces
-        )
+    def GetActiveInterfaces(self) -> List[Tuple[Str, List[Tuple[Str, Str]]]]:
+        iface_indexes = list(index for index in self.config.active_ifaces)
+        return self._pack_interfaces(iface_indexes)
 
     @is_running
     def ActivateInterface(self, name: Str) -> Str:
@@ -159,8 +148,8 @@ class WallDaemon(GObject.GObject):
 
     @is_running
     def DeactivateInterface(self, name: Str) -> Str:
-        if name not in (item.name for item in self.config.ifaces):
-            return "Interface is inactive."
+        if name not in (self.config.ifaces[index] for index in self.config.active_ifaces):
+            return "Interface already inactive."
         for index, iface in enumerate(self.config.ifaces):
             if iface.name != name:
                 continue
@@ -276,7 +265,7 @@ class WallDaemon(GObject.GObject):
 
     def _set_wallpaper_finish(self, _, result):
         try:
-            success = result.propagate_value().get_boolean()
+            success = result.propagate_boolean()
 
             if success:
                 self._logger.info("Wallpaper set successfully.")
@@ -293,11 +282,23 @@ class WallDaemon(GObject.GObject):
         else:
             return val
 
+    def _pack_interfaces(self, iface_indexes: List[int]) -> List[Tuple[Str, List[Tuple[Str, Str]]]]:
+        ifaces = []
+        for iface_index in iface_indexes:
+            iface = self.config.ifaces[iface_index]
+            variables = []
+            for name, var in iface.variables.items():
+                if not isinstance(var, Constant):
+                    variables.append((name, var.value().__str__()))
+            ifaces.append((iface.name, variables))
+
+        return ifaces
+
 
 def main():
     # TODO: add program argument for config
-    # config_path = expanduser("~/.config/walld/config.toml")
-    config_path = expanduser("~/python/walld/default.toml")
+    config_path = expanduser("~/.config/walld/config.toml")
+    # config_path = expanduser("~/python/walld/default.toml")
 
     loop = EventLoop()
 

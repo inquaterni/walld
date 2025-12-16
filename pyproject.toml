@@ -1,0 +1,12 @@
+[project]
+name = "walld"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["dasbus", "PyGObject"]
+
+[project.scripts]
+walld = "main:main"
+walld-server = "server:main"
+
+[tool.setuptools]
+py-modules = ["main", "server", "config", "toml_config", "errors"]

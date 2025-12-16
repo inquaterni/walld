@@ -37,7 +37,8 @@ from config import SERVICE
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Command-line client for the WallD D-Bus service.",
+        description="Command-line client for the WallD D-Bus service.\nManage wallpapers, schedules, and backend interfaces.",
+        formatter_class=argparse.RawTextHelpFormatter
     )
 
     subparsers = parser.add_subparsers(
@@ -45,9 +46,12 @@ def main():
     )
 
     schedule_parser = subparsers.add_parser(
-        "schedule", help="Set the wallpaper rotation schedule."
+        "schedule",
+        help="Configure the automatic wallpaper rotation interval."
     )
-    schedule_parser.add_argument("value", type=int, help="Number of units")
+    schedule_parser.add_argument(
+        "value", type=int, help="Time value (e.g., 30)"
+    )
     schedule_parser.add_argument(
         "units",
         choices=["s", "m", "h"],
@@ -55,54 +59,54 @@ def main():
     )
 
     files_parser = subparsers.add_parser(
-        "files", help="Set the list of wallpaper files."
+        "files",
+        help="Update the list of wallpapers (replaces current list)."
     )
     files_parser.add_argument(
-        "files", nargs="+", help="One or more paths to wallpaper files"
+        "files", nargs="+", help="Paths to image files to use as wallpapers"
     )
 
     shuffle_parser = subparsers.add_parser(
-        "shuffle", help="Enable or disable shuffle mode."
+        "shuffle",
+        help="Toggle random wallpaper playback order."
     )
     shuffle_parser.add_argument(
-        "state", choices=["on", "off"], help="Turn shuffle 'on' or 'off'"
+        "state", choices=["on", "off"], help="Enable ('on') or disable ('off') shuffle"
     )
 
     subparsers.add_parser(
-        "current-wallpaper", help="Get the current wallpaper filename."
+        "current-wallpaper",
+        help="Print the filename of the currently displayed wallpaper."
     )
 
     subparsers.add_parser(
-        "list", help="List all interfaces defined in the server config."
+        "list",
+        help="Show all available backend interfaces and their settings."
     )
 
-    interface_parser = subparsers.add_parser(
-        "interface", help="Choose interface for manipulation."
+    set_help_text = (
+        "Modify interface variables or change interface state.\n\n"
+        "Supported formats:\n"
+        "  1. Space-separated:  walld set <interface> <var> <value>\n"
+        "  2. Dot-separated:    walld set <interface>.<var> <value>\n"
+        "  3. State change:     walld set <interface> <enabled|disabled>"
     )
-
-    interface_parser.add_argument(
-        "interface_name", help="Interface name that contains desired variable"
+    set_parser = subparsers.add_parser(
+        "set",
+        help="Set configuration variables or enable/disable interfaces.",
+        description=set_help_text,
+        formatter_class=argparse.RawTextHelpFormatter
     )
-
-    interface_parser.add_argument(
-        "var_name", help="Choose variable to change its value."
+    set_parser.add_argument(
+        "args",
+        nargs="+",
+        metavar="ARGS",
+        help="Arguments defining what to set (see examples above)"
     )
-
-    interface_parser.add_argument(
-        "value", help="Value to use as new."
+    subparsers.add_parser(
+        "list-active",
+        help="List only the interfaces that are currently running."
     )
-
-    subparsers.add_parser("list-active", help="List all active interfaces.")
-
-    activate_parser = subparsers.add_parser(
-        "activate", help="Activate a defined interface."
-    )
-    activate_parser.add_argument("name", help="Name of the interface to activate")
-
-    deactivate_parser = subparsers.add_parser(
-        "deactivate", help="Deactivate a defined interface."
-    )
-    deactivate_parser.add_argument("name", help="Name of the interface to deactivate")
 
     args = parser.parse_args()
 
@@ -127,7 +131,6 @@ def main():
 
         elif args.command == "current-wallpaper":
             result = proxy.GetCurrentWallpaperFilename()
-            # print(result)
 
         elif args.command == "list":
             interfaces = proxy.GetInterfaces()
@@ -136,41 +139,66 @@ def main():
                 for iface, variables in interfaces:
                     print(f"- {iface}")
                     if variables:
-                        print("\tMutable variables:")
+                        print("\tVariables:")
                         for var, current_value in variables:
-                            print(f"\t- {var}, value: `{current_value}`")
+                            print(f"\t- {var} = '{current_value}'")
             elif interfaces:
                 result = interfaces[0]
             else:
                 print("No interfaces found.")
-        elif args.command == "interface":
-            result = proxy.SetVariableValue(args.interface_name, args.var_name, args.value)
+
+        elif args.command == "set":
+            inputs = args.args
+
+            if len(inputs) == 3:
+                interface_name = inputs[0]
+                var_name = inputs[1]
+                value = inputs[2]
+                result = proxy.SetVariableValue(interface_name, var_name, value)
+            elif len(inputs) == 2:
+                if "." in inputs[0]:
+                    parts = inputs[0].split(".", 1)
+                    interface_name = parts[0]
+                    var_name = parts[1]
+                    value = inputs[1]
+                    result = proxy.SetVariableValue(interface_name, var_name, value)
+                else:
+                    if inputs[1].lower() == "enabled":
+                        result = proxy.ActivateInterface(inputs[0])
+                    elif inputs[1].lower() == "disabled":
+                        result = proxy.DeactivateInterface(inputs[0])
+                    else:
+                        print(f"Error: Unknown state '{inputs[1]}'. Use 'enabled' or 'disabled'.")
+                        exit(1)
+            else:
+                print("Error: Invalid number of arguments.")
+                print("Run 'walld set --help' to see usage examples.")
+                exit(1)
+
         elif args.command == "list-active":
             interfaces = proxy.GetActiveInterfaces()
             if interfaces and "ERROR:" not in interfaces[0]:
                 print("Active interfaces:")
-                for iface in interfaces:
+                for iface, variables in interfaces:
                     print(f"- {iface}")
+                    if variables:
+                        print("\tVariables:")
+                        for var, current_value in variables:
+                            print(f"\t- {var} = '{current_value}'")
             elif interfaces:
                 result = interfaces[0]
             else:
                 print("No active interfaces.")
 
-        elif args.command == "activate":
-            result = proxy.ActivateInterface(args.name)
-
-        elif args.command == "deactivate":
-            result = proxy.DeactivateInterface(args.name)
-
         if result:
             print(result)
 
     except DBusError as e:
+        print(e)
         exit(1)
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         exit(1)
-
 
 if __name__ == "__main__":
     main()

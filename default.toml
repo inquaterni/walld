@@ -11,7 +11,7 @@ shuffle = true
 path = "~/Pictures/wallpapers/"
 ## Here you choose what interfaces is used from program startup, can be empty, in that case daemon will just sleep
 ## until user activates at least one of accessible interface declared in [Interfaces section]
-active_interfaces = ["swww"]
+active_interfaces = ["hyprpanel"]
 
 ## NOTE: EVERY interface MUST be saved, so it is accessible from client program
 [Interfaces]
@@ -19,10 +19,6 @@ active_interfaces = ["swww"]
 ## %f for image file passed by daemon when changing wallpaper
 ## In help message will appear option for enabling or disabling this interface
 hyprpanel = ["hyprpanel", "setWallpaper", "%f"]
-## Here %transition_type:transition_types means that user provides swww's transition-type via client program, and
-## transition_type valid values are that are declared in transition_types variable %transition_fps represents
-## just static variable that is not (yet) possible to change unless there is a change in config AND reboot
-#swww = ["swww", "img", "--transition-type", "%transition_type:transition_types", "--transition-fps", "%transition_fps", "%f"
 
 [Interfaces.swww]
 args = [
@@ -31,19 +27,18 @@ args = [
     "--transition-fps", "%transition_fps",
     "%f"
 ]
-# Mutable variable, can be const
+## Mutable variable, can be const
 [Interfaces.swww.variables.transition_fps]
 value = 30
 #const = true
 
-# Constant can be also declared this way
-#[Interfaces.swww.variables]
-#transition_fps = 30
+## Constant can be also declared this way
+##[Interfaces.swww.variables]
+##transition_fps = 30
 
-# Enum type, cannot be constant
+## Enum type, cannot be constant
 [Interfaces.swww.variables.transition_type]
 current = "grow"
 options = ["grow", "wipe", "outer"]
-# TODO: Add support for that :)
-#random = true
-
+## TODO: Add support for that :)
+##random = true
