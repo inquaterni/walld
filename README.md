@@ -13,14 +13,9 @@ The core daemon never talks directly to a specific compositor or desktop; instea
 
 ### Requirements
 
-- Python 3.11
+- Python 3.11+
 - `dasbus`
 - `PyGObject`
-
-On Arch‑like systems, you’ll typically need:
-
-- `python-dasbus`
-- `python-gobject` (or equivalent)
 
 ### Installation
 
@@ -187,9 +182,3 @@ walld set swaybg enabled
 
 The daemon raises specific error types (e.g. `InvalidInterfaceNameError`, `NoFilesProvidedError`, `UnknownTimeUnitsError`, `VariableTypeError`) which are translated to D‑Bus errors.  
 The CLI prints D‑Bus `DBusError` messages and suggests checking whether the server is running if it can’t reach the service.
-
-### Design Notes
-
-- **Backend‑agnostic core**: the daemon only knows “interfaces”, so adding support for a new compositor or wallpaper tool is just a matter of editing the TOML.
-- **Strong typing around config**: `Config`, `Interface`, `Var` types, and enum `Units` ensure config is validated before use. Runtime type checking validates variable assignments and raises `VariableTypeError` when types don't match.
-- **Non‑blocking updates**: wallpaper setting work is dispatched through `Gio.Task` so the D‑Bus service stays responsive during image changes.
