@@ -1,10 +1,13 @@
 from abc import abstractmethod, ABC
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Any
-from tomllib import load
-from pathlib import Path
 from mimetypes import guess_type
+from pathlib import Path
+from tomllib import load, TOMLDecodeError
+from typing import List, Any
+
+from watchdog.events import FileSystemEventHandler, FileCreatedEvent, \
+    FileModifiedEvent
 
 
 class ConfigError(Exception):
@@ -16,15 +19,18 @@ class Units(Enum):
     MINUTES = "m"
     HOURS = "h"
 
+
 class Var(ABC):
     @abstractmethod
     def value(self):
         pass
 
+
 class MutableVar(ABC):
     @abstractmethod
     def set_value(self, new):
         pass
+
 
 @dataclass(frozen=True)
 class Constant(Var):
@@ -32,6 +38,7 @@ class Constant(Var):
 
     def value(self):
         return self.val
+
 
 @dataclass
 class Mutable(Var, MutableVar):
@@ -62,7 +69,6 @@ class Enumeration(Var, MutableVar):
             raise ValueError(f"Enum `{self.__class__.__name__}` cannot be assigned value `{new}` - possible options: {self.options}")
         
         self.current = new
-
 
 
 @dataclass
@@ -215,13 +221,42 @@ def parse_config(path: str) -> Config:
     with open(p, "rb") as f:
         config_dict = load(f)
 
-    config = ConfigBuilder() \
+    return ConfigBuilder() \
               .apply_ifaces(config_dict.get("Interfaces")) \
               .apply_daemon_settings(config_dict.get("Daemon")) \
               .build()
 
-    return config
+
+class ConfigEventHandler(FileSystemEventHandler):
+    def __init__(self, on_created_cb: callable(FileCreatedEvent), on_modified_cb: callable(FileModifiedEvent)):
+        super().__init__()
+        self.on_created_cb = on_created_cb
+        self.on_modified_cb = on_modified_cb
+
+    def on_created(self, event: FileCreatedEvent) -> None:
+        super().on_created(event)
+        try:
+            self.on_created_cb(event)
+        except Exception:
+            return
+
+
+    # TODO: Maybe add warning about deletion of dir/config file
+    # def on_deleted(self, event: DirDeletedEvent | FileDeletedEvent) -> None:
+    #     super().on_deleted(event)
+    #
+    #     what = "directory" if event.is_directory else "file"
+    #     self.logger.info("Deleted %s: %s", what, event.src_path)
+
+    def on_modified(self, event: FileModifiedEvent) -> None:
+        super().on_modified(event)
+        try:
+            self.on_modified_cb(event)
+        except Exception:
+            return
+
 
 if __name__ == "__main__":
     config = parse_config("default.toml")
     print(config)
+

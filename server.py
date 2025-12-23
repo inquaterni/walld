@@ -4,20 +4,25 @@
 #       2. Provide status information via D-Bus properties
 from functools import wraps
 from os.path import expanduser
+from queue import Queue
 from subprocess import run
+from sys import argv
+from tomllib import TOMLDecodeError
 from typing import Callable, Tuple, Any
 
 from dasbus.server.interface import dbus_interface
 from dasbus.typing import Str, Int, List, Bool
 from gi import require_version
+from watchdog.events import FileCreatedEvent, FileModifiedEvent
+from watchdog.observers import Observer
 
 require_version("GLib", "2.0")
 require_version("Gio", "2.0")
 require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, GObject
 from dasbus.loop import EventLoop
-from logging import Logger, getLogger, Formatter, DEBUG
-from logging.handlers import SysLogHandler
+from logging import Logger, getLogger, Formatter, DEBUG, StreamHandler
+from logging.handlers import SysLogHandler, QueueListener, QueueHandler
 from config import SERVICE
 from os import urandom
 from random import Random
@@ -28,17 +33,26 @@ from errors import (
     ServerNotRunningError,
     UnknownTimeUnitsError, VariableDoesNotExistError, VariableTypeError,
 )
-from toml_config import parse_config, Constant, Var
+from toml_config import parse_config, Constant, Var, ConfigEventHandler, ConfigError
 
-
-def logger_setup(logger: Logger):
+def logger_setup(logger: Logger) -> QueueListener:
     logger.propagate = False
     logger.handlers.clear()
     handler = SysLogHandler("/dev/log", SysLogHandler.LOG_LOCAL1)
+    # handler = StreamHandler()
     formatter = Formatter("[%(levelname)s] %(threadName)s %(name)s: %(message)s")
     handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    queue = Queue()
+    queue_listener = QueueListener(
+        queue,
+        handler
+    )
+    queue_listener.start()
+    logger.addHandler(QueueHandler(queue))
     logger.setLevel(DEBUG)
+
+    # User is responsible for stopping queue listener
+    return queue_listener
 
 
 logger = getLogger(__name__)
@@ -66,7 +80,7 @@ class WallDaemon(GObject.GObject):
         self._timer_id = None
         self._current_index = 0
         self._logger = getLogger(__class__.__name__)
-        logger_setup(self._logger)
+        self.queue_listener = logger_setup(self._logger)
 
         # 4 bytes hardware based random, used once for seed
         self._seed = urandom(4)
@@ -74,6 +88,7 @@ class WallDaemon(GObject.GObject):
         self._shuffle_indexes = []
 
         self.config = None
+        self.observer = None
 
     ############################
     ## DBUS INTERFACE METHODS ##
@@ -180,6 +195,44 @@ class WallDaemon(GObject.GObject):
         self.config = parse_config(config_path)
         self._is_running = True
         self._set_schedule(self.config.schedule, self.config.units.value)
+
+        event_handler = ConfigEventHandler(self._on_config_created, self._on_config_modified)
+        self.observer = Observer()
+        self.observer.schedule(event_handler, config_path, event_filter=[FileCreatedEvent, FileModifiedEvent])
+        self.observer.start()
+
+    # TODO: probably should save config path and check for it in order to prevent misfires/misconfigures
+    def _on_config_created(self, event: FileCreatedEvent):
+        self._logger.info("Config have been created, applying...")
+        try:
+            config = parse_config(event.src_path)
+
+            if config.schedule != self.config.schedule or config.units != self.config.units:
+                self._set_schedule(config.schedule, config.units.value)
+
+            self.config = config
+        except (ConfigError, TOMLDecodeError) as e:
+            self._logger.error("While parsing config exception was thrown.", exc_info=e)
+        except Exception as e:
+            self._logger.error("Unexpected error in config watcher", exc_info=e)
+        else:
+            self._logger.info("Config have been applied successfully.")
+
+    def _on_config_modified(self, event: FileModifiedEvent):
+        self._logger.info("Config have been modified, updating...")
+        try:
+            config = parse_config(event.src_path)
+
+            if config.schedule != self.config.schedule or config.units != self.config.units:
+                self._set_schedule(config.schedule, config.units.value)
+
+            self.config = config
+        except (ConfigError, TOMLDecodeError) as e:
+            self._logger.error("While parsing config exception was thrown.", exc_info=e)
+        except Exception as e:
+            self._logger.error("Unexpected error in config watcher", exc_info=e)
+        else:
+            self._logger.info("Config have been updated successfully.")
 
     def _set_schedule(self, schedule: Int, units: Str) -> Str:
         if self._timer_id:
@@ -294,14 +347,22 @@ class WallDaemon(GObject.GObject):
 
         return ifaces
 
+    def __del__(self):
+        self.observer.stop()
+        self.observer.join()
+        self.queue_listener.stop()
 
-def main():
-    # TODO: add program argument for config
-    config_path = expanduser("~/.config/walld/config.toml")
-    # config_path = expanduser("~/python/walld/default.toml")
+
+def main(argv):
+    if len(argv) == 1:
+        config_path = expanduser("~/python/walld/default.toml")
+    if len(argv) == 2:
+        config_path = expanduser(argv[1])
+    else:
+        print("Wrong argument count.")
+        exit(1)
 
     loop = EventLoop()
-
     try:
         logger.info("Starting WallD DBus Service...")
         service = WallDaemon()
@@ -313,7 +374,6 @@ def main():
         logger.info("Service is running. Press Ctrl+C to stop.")
 
         service.run(config_path)
-
         loop.run()
 
     except KeyboardInterrupt:
@@ -326,4 +386,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(argv)
