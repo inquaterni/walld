@@ -10,12 +10,14 @@ The core daemon never talks directly to a specific compositor or desktop; instea
 - **Config‑driven**: Single TOML config controls schedule, shuffle, image source, and interfaces.
 - **Async wallpaper updates**: Uses GLib / Gio to run wallpaper commands off the main loop.
 - **CLI client**: `walld` command to inspect and control the running daemon.
+- **Config hot reloading**: Uses fs events library `watchdog` for config hot reloading capabilities
 
 ### Requirements
 
 - Python 3.11+
 - `dasbus`
 - `PyGObject`
+- `watchdog`
 
 ### Installation
 
