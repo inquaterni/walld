@@ -41,7 +41,7 @@ def logger_setup(logger: Logger) -> QueueListener:
     logger.handlers.clear()
     handler = SysLogHandler("/dev/log", SysLogHandler.LOG_LOCAL1)
     # handler = StreamHandler()
-    formatter = Formatter("[%(laevelname)s] %(threadName)s %(name)s: %(message)s")
+    formatter = Formatter("[%(levelname)s] %(threadName)s %(name)s: %(message)s")
     handler.setFormatter(formatter)
     queue = Queue()
     queue_listener = QueueListener(
