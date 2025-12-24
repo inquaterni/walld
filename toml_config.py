@@ -55,6 +55,7 @@ class Mutable(Var, MutableVar):
 
 @dataclass
 class Enumeration(Var, MutableVar):
+    name: str
     current: Any
     options: List[Any] = field(default_factory=list)
 
@@ -63,10 +64,9 @@ class Enumeration(Var, MutableVar):
 
     def set_value(self, new: Any):
         if not isinstance(new, type(self.current)):
-            # TODO: add error message
-            raise ValueError()
+            raise ValueError(f"Value of type `{type(self.current)}` cannot be assigned value of type `{type(new)}`.")
         if new not in self.options:
-            raise ValueError(f"Enum `{self.__class__.__name__}` cannot be assigned value `{new}` - possible options: {self.options}")
+            raise AttributeError(f"Enum `{self.name}` cannot be assigned value `{new}` - possible options: {self.options}")
         
         self.current = new
 
@@ -146,7 +146,7 @@ class ConfigBuilder:
                             if options is None:
                                 raise ConfigError("Enum type expected to have `options` field/variable.")
 
-                            variables[k] = Enumeration(current, options)
+                            variables[k] = Enumeration(k, current, options)
                         else:
                             # Not verbose => constant
                             variables[k] = Constant(v)

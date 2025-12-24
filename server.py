@@ -6,20 +6,21 @@ from functools import wraps
 from os.path import expanduser
 from queue import Queue
 from subprocess import run
-from sys import argv
+from sys import argv, exc_info
 from tomllib import TOMLDecodeError
 from typing import Callable, Tuple, Any
 
 from dasbus.server.interface import dbus_interface
 from dasbus.typing import Str, Int, List, Bool
 from gi import require_version
+from gi.repository.Gio import Cancellable
 from watchdog.events import FileCreatedEvent, FileModifiedEvent
 from watchdog.observers import Observer
 
-require_version("GLib", "2.0")
 require_version("Gio", "2.0")
-require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, GObject
+from gi.repository.Gio import Subprocess, SubprocessFlags, io_error_quark, IOErrorEnum
+from gi.repository.GLib import Error
 from dasbus.loop import EventLoop
 from logging import Logger, getLogger, Formatter, DEBUG, StreamHandler
 from logging.handlers import SysLogHandler, QueueListener, QueueHandler
@@ -31,15 +32,15 @@ from errors import (
     InvalidInterfaceNameError,
     NoFilesProvidedError,
     ServerNotRunningError,
-    UnknownTimeUnitsError, VariableDoesNotExistError, VariableTypeError,
+    UnknownTimeUnitsError, VariableDoesNotExistError, VariableTypeError, VariableAttributeError,
 )
 from toml_config import parse_config, Constant, Var, ConfigEventHandler, ConfigError
 
 def logger_setup(logger: Logger) -> QueueListener:
     logger.propagate = False
     logger.handlers.clear()
-    handler = SysLogHandler("/dev/log", SysLogHandler.LOG_LOCAL1)
-    # handler = StreamHandler()
+    # handler = SysLogHandler("/dev/log", SysLogHandler.LOG_LOCAL1)
+    handler = StreamHandler()
     formatter = Formatter("[%(levelname)s] %(threadName)s %(name)s: %(message)s")
     handler.setFormatter(formatter)
     queue = Queue()
@@ -71,7 +72,6 @@ def is_running(func: Callable):
 
 # TODO: add ability to change enum variables through DBus interface
 # TODO: implement get functionality
-# TODO: add more comprehensive errors
 @dbus_interface(SERVICE.interface_name)
 class WallDaemon(GObject.GObject):
     def __init__(self):
@@ -82,6 +82,7 @@ class WallDaemon(GObject.GObject):
         self._logger = getLogger(__class__.__name__)
         self.queue_listener = logger_setup(self._logger)
 
+        self.cancellable = Cancellable()
         # 4 bytes hardware based random, used once for seed
         self._seed = urandom(4)
         self._rng = Random(self._seed)
@@ -124,8 +125,6 @@ class WallDaemon(GObject.GObject):
     @is_running
     def SetVariableValue(self, iface_name: Str, var_name: Str, value: Str) -> Str:
         iface_indexes = tuple(index for index in range(len(self.config.ifaces)) if iface_name == self.config.ifaces[index].name)
-        if len(iface_indexes) > 1:
-            return "Unknown error."
         if len(iface_indexes) < 1:
             raise InvalidInterfaceNameError()
 
@@ -139,6 +138,8 @@ class WallDaemon(GObject.GObject):
             var.set_value(val)
         except ValueError:
             raise VariableTypeError(type(var.value()), type(val))
+        except AttributeError as e:
+            raise VariableAttributeError(e)
         else:
             self._logger.info(f"Set variable `{var_name}` value `{value}`")
             return "OK"
@@ -186,6 +187,13 @@ class WallDaemon(GObject.GObject):
             index = self._current_index
 
         return self.config.files[index]
+
+    @is_running
+    def ForceWallpaperChange(self) -> Str:
+        self._logger.info("Force wallpaper change.")
+        self._set_next_wallpaper()
+        self._set_schedule(self.config.schedule, self.config.units.value)
+        return "OK"
 
     ###################
     ## CLASS METHODS ##
@@ -288,7 +296,7 @@ class WallDaemon(GObject.GObject):
 
             task = Gio.Task.new(
                 source_object=self,
-                cancellable=None,  # TODO: add Cancellable object here
+                cancellable=self.cancellable,
                 callback=self._set_wallpaper_finish,
             )
 
@@ -299,22 +307,48 @@ class WallDaemon(GObject.GObject):
 
     def _set_wallpaper(self, task, source_object, _, cancellable):
         index = task.get_task_data()
-
+        if index >= len(self.config.files):
+            task.return_error(Error(message=f"Index was out of bounds: {index}, size={len(self.config.files)}"))
+            return
         try:
             for interface_index in self.config.active_ifaces:
-                run(
+                if cancellable.is_cancelled() and task.return_error_if_cancelled():
+                    return
+
+                proc = Subprocess.new(
                     self.config.ifaces[interface_index].formatted_args(
                         self.config.files[index]
                     ),
-                    check=False,
+                    SubprocessFlags.STDERR_PIPE | SubprocessFlags.STDOUT_PIPE
                 )
+
+                proc.communicate_utf8_async(cancellable=cancellable, callback=self._communicate_finish)
 
             task.return_boolean(True)
         except Exception as e:
             self._logger.error(
-                f"Failed to set wallpaper for interface {interface_index}: {e}"
+                f"Failed to set wallpaper for interface {self.config.ifaces[interface_index].name}.",
+                exc_info=e
             )
-            task.return_error(GLib.Error(message=f"{type(e).__name__}: {e}"))
+            task.return_error(Error(message=f"{type(e)}: {e}"))
+
+    def _communicate_finish(self, proc: Subprocess, result):
+        try:
+            success, stdout, stderr = proc.communicate_utf8_finish(result)
+
+            if success:
+                self._logger.info("Communication finished successfully.")
+            if stdout:
+                self._logger.info(f"Subprocess output: '{stdout.strip()}'")
+            if stderr:
+                self._logger.error(f"Subprocess error output: '{stderr.strip()}'")
+        except Error as e:
+            if e.matches(io_error_quark(), IOErrorEnum.CANCELLED):
+                self._logger.error("Communication canceled.")
+            else:
+                self._logger.error(f"Communication error: {e}")
+        except Exception as e:
+            self._logger.error(f"Communication error: {e}")
 
     def _set_wallpaper_finish(self, _, result):
         try:
@@ -335,6 +369,7 @@ class WallDaemon(GObject.GObject):
         else:
             return val
 
+    # TODO: make normal packets for more flexible messaging
     def _pack_interfaces(self, iface_indexes: List[int]) -> List[Tuple[Str, List[Tuple[Str, Str]]]]:
         ifaces = []
         for iface_index in iface_indexes:
@@ -347,7 +382,7 @@ class WallDaemon(GObject.GObject):
 
         return ifaces
 
-    def __del__(self):
+    def stop(self):
         self.observer.stop()
         self.observer.join()
         self.queue_listener.stop()
@@ -355,18 +390,19 @@ class WallDaemon(GObject.GObject):
 
 def main(argv):
     if len(argv) == 1:
-        config_path = expanduser("~/python/walld/default.toml")
-    if len(argv) == 2:
+        config_path = expanduser("~/.config/walld/config.toml")
+    elif len(argv) == 2:
         config_path = expanduser(argv[1])
     else:
         print("Wrong argument count.")
         exit(1)
 
     loop = EventLoop()
-    try:
-        logger.info("Starting WallD DBus Service...")
-        service = WallDaemon()
 
+    logger.info("Starting WallD DBus Service...")
+    service = WallDaemon()
+
+    try:
         SERVICE.message_bus.publish_object(SERVICE.object_path, service)
         SERVICE.message_bus.register_service(SERVICE.service_name)
 
@@ -381,7 +417,9 @@ def main(argv):
     except Exception as e:
         logger.error(f"Error: {e}")
     finally:
-        logger.info("Closing Session Message Bus.")
+        logger.info("Closing session message bus.")
+        loop.quit()
+        service.stop()
         SERVICE.message_bus.disconnect()
 
 

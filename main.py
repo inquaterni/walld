@@ -84,6 +84,11 @@ def main():
         help="Show all available backend interfaces and their settings."
     )
 
+    subparsers.add_parser(
+        "force-change",
+        help="Force wallpaper change."
+    )
+
     set_help_text = (
         "Modify interface variables or change interface state.\n\n"
         "Supported formats:\n"
@@ -146,7 +151,8 @@ def main():
                 result = interfaces[0]
             else:
                 print("No interfaces found.")
-
+        elif args.command == "force-change":
+            result = proxy.ForceWallpaperChange()
         elif args.command == "set":
             inputs = args.args
 
