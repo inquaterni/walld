@@ -13,14 +13,13 @@ from typing import Callable, Tuple, Any
 from dasbus.server.interface import dbus_interface
 from dasbus.typing import Str, Int, List, Bool
 from gi import require_version
-from gi.repository.Gio import Cancellable
 from watchdog.events import FileCreatedEvent, FileModifiedEvent
 from watchdog.observers import Observer
 
 require_version("Gio", "2.0")
-from gi.repository import Gio, GLib, GObject
-from gi.repository.Gio import Subprocess, SubprocessFlags, io_error_quark, IOErrorEnum
-from gi.repository.GLib import Error
+from gi.repository.Gio import Subprocess, SubprocessFlags, io_error_quark, IOErrorEnum, Cancellable, Task
+from gi.repository.GLib import Error, source_remove, SOURCE_CONTINUE, timeout_add_seconds, idle_add, SOURCE_REMOVE
+from gi.repository.GObject import GObject
 from dasbus.loop import EventLoop
 from logging import Logger, getLogger, Formatter, DEBUG, StreamHandler
 from logging.handlers import SysLogHandler, QueueListener, QueueHandler
@@ -34,14 +33,15 @@ from errors import (
     ServerNotRunningError,
     UnknownTimeUnitsError, VariableDoesNotExistError, VariableTypeError, VariableAttributeError,
 )
-from toml_config import parse_config, Constant, Var, ConfigEventHandler, ConfigError
+from toml_config import parse_config, Constant, Var, ConfigEventHandler, ConfigError, Config
+
 
 def logger_setup(logger: Logger) -> QueueListener:
     logger.propagate = False
     logger.handlers.clear()
-    # handler = SysLogHandler("/dev/log", SysLogHandler.LOG_LOCAL1)
-    handler = StreamHandler()
-    formatter = Formatter("[%(levelname)s] %(threadName)s %(name)s: %(message)s")
+    handler = SysLogHandler("/dev/log", SysLogHandler.LOG_LOCAL1)
+    # handler = StreamHandler()
+    formatter = Formatter("[%(laevelname)s] %(threadName)s %(name)s: %(message)s")
     handler.setFormatter(formatter)
     queue = Queue()
     queue_listener = QueueListener(
@@ -73,7 +73,7 @@ def is_running(func: Callable):
 # TODO: add ability to change enum variables through DBus interface
 # TODO: implement get functionality
 @dbus_interface(SERVICE.interface_name)
-class WallDaemon(GObject.GObject):
+class WallDaemon(GObject):
     def __init__(self):
         super().__init__()
         self._is_running = False
@@ -209,6 +209,10 @@ class WallDaemon(GObject.GObject):
         self.observer.schedule(event_handler, config_path, event_filter=[FileCreatedEvent, FileModifiedEvent])
         self.observer.start()
 
+    def _update_schedule(self, config: Config):
+        _ = self._set_schedule(config.schedule, config.units.value)
+        return SOURCE_REMOVE
+
     # TODO: probably should save config path and check for it in order to prevent misfires/misconfigures
     def _on_config_created(self, event: FileCreatedEvent):
         self._logger.info("Config have been created, applying...")
@@ -216,7 +220,7 @@ class WallDaemon(GObject.GObject):
             config = parse_config(event.src_path)
 
             if config.schedule != self.config.schedule or config.units != self.config.units:
-                self._set_schedule(config.schedule, config.units.value)
+                idle_add(self._update_schedule, config)
 
             self.config = config
         except (ConfigError, TOMLDecodeError) as e:
@@ -232,7 +236,7 @@ class WallDaemon(GObject.GObject):
             config = parse_config(event.src_path)
 
             if config.schedule != self.config.schedule or config.units != self.config.units:
-                self._set_schedule(config.schedule, config.units.value)
+                idle_add(self._update_schedule, config)
 
             self.config = config
         except (ConfigError, TOMLDecodeError) as e:
@@ -244,7 +248,7 @@ class WallDaemon(GObject.GObject):
 
     def _set_schedule(self, schedule: Int, units: Str) -> Str:
         if self._timer_id:
-            GLib.source_remove(self._timer_id)
+            source_remove(self._timer_id)
             self._timer_id = None
 
         match units:
@@ -260,10 +264,10 @@ class WallDaemon(GObject.GObject):
         def timer_callback():
             self._logger.info("Timeout reached, setting next wallpaper")
             self._set_next_wallpaper()
-            return GLib.SOURCE_CONTINUE
+            return SOURCE_CONTINUE
 
         if timeout > 0:
-            self._timer_id = GLib.timeout_add_seconds(timeout, timer_callback)
+            self._timer_id = timeout_add_seconds(timeout, timer_callback)
             self._logger.info(f"Schedule set for {schedule} {units}.")
             return "OK"
 
@@ -294,7 +298,7 @@ class WallDaemon(GObject.GObject):
             else:
                 index = self._current_index
 
-            task = Gio.Task.new(
+            task = Task.new(
                 source_object=self,
                 cancellable=self.cancellable,
                 callback=self._set_wallpaper_finish,
