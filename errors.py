@@ -5,12 +5,6 @@ error_mapper = ErrorMapper()
 dbus_error = get_error_decorator(error_mapper)
 
 
-@dbus_error(ERROR.interface_name + "ServerNotRunningError")
-class ServerNotRunningError(DBusError):
-    def __init__(self, *args) -> None:
-        super().__init__("Server is not running.", *args)
-
-
 @dbus_error(ERROR.interface_name + "UnknownTimeUnitsError")
 class UnknownTimeUnitsError(DBusError):
     def __init__(self, *args: object) -> None:
@@ -23,6 +17,12 @@ class NoFilesProvidedError(DBusError):
         super().__init__("No files were provided.", *args)
 
 
+@dbus_error(ERROR.interface_name + "NoValidFilesProvidedError")
+class NoValidFilesProvidedError(DBusError):
+    def __init__(self, *args):
+        super().__init__("No valid files provided.", *args)
+
+
 @dbus_error(ERROR.interface_name + "InvalidInterfaceNameError")
 class InvalidInterfaceNameError(DBusError):
     def __init__(self, *args: object) -> None:
@@ -32,7 +32,7 @@ class InvalidInterfaceNameError(DBusError):
 @dbus_error(ERROR.interface_name + "VariableDoesNotExistError")
 class VariableDoesNotExistError(DBusError):
     def __init__(self, var_name: str, *args: object):
-        super().__init__(f"Variable `{var_name}` does not exist", *args)
+        super().__init__(f"Variable `{var_name}` does not exist.", *args)
 
 
 @dbus_error(ERROR.interface_name + "VariableTypeError")

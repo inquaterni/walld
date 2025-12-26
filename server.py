@@ -1,14 +1,14 @@
 #!/usr/bin/env python
-
+from argparse import ArgumentParser
+from enum import Enum
+from functools import wraps
 # TODO: 1. Handle D-Bus connection failures
 #       2. Provide status information via D-Bus properties
-from functools import wraps
-from os.path import expanduser
+from mimetypes import guess_type
+from pathlib import Path
 from queue import Queue
-from subprocess import run
-from sys import argv, exc_info
 from tomllib import TOMLDecodeError
-from typing import Callable, Tuple, Any
+from typing import Tuple, Any
 
 from dasbus.server.interface import dbus_interface
 from dasbus.typing import Str, Int, List, Bool
@@ -21,7 +21,7 @@ from gi.repository.Gio import Subprocess, SubprocessFlags, io_error_quark, IOErr
 from gi.repository.GLib import Error, source_remove, SOURCE_CONTINUE, timeout_add_seconds, idle_add, SOURCE_REMOVE
 from gi.repository.GObject import GObject
 from dasbus.loop import EventLoop
-from logging import Logger, getLogger, Formatter, DEBUG, StreamHandler
+from logging import Logger, getLogger, Formatter, DEBUG, StreamHandler, INFO, Handler
 from logging.handlers import SysLogHandler, QueueListener, QueueHandler
 from config import SERVICE
 from os import urandom
@@ -30,59 +30,71 @@ from random import Random
 from errors import (
     InvalidInterfaceNameError,
     NoFilesProvidedError,
-    ServerNotRunningError,
-    UnknownTimeUnitsError, VariableDoesNotExistError, VariableTypeError, VariableAttributeError,
+    UnknownTimeUnitsError,
+    VariableDoesNotExistError,
+    VariableTypeError,
+    VariableAttributeError,
+    NoValidFilesProvidedError,
 )
 from toml_config import parse_config, Constant, Var, ConfigEventHandler, ConfigError, Config
 
+class Mode(Enum):
+    DEFAULT = 0
+    DEBUG = 1
 
-def logger_setup(logger: Logger) -> QueueListener:
-    logger.propagate = False
-    logger.handlers.clear()
-    handler = SysLogHandler("/dev/log", SysLogHandler.LOG_LOCAL1)
-    # handler = StreamHandler()
-    formatter = Formatter("[%(levelname)s] %(threadName)s %(name)s: %(message)s")
-    handler.setFormatter(formatter)
+
+def queue_init(handler: Handler) -> tuple[QueueListener, QueueHandler]:
     queue = Queue()
     queue_listener = QueueListener(
         queue,
         handler
     )
     queue_listener.start()
-    logger.addHandler(QueueHandler(queue))
-    logger.setLevel(DEBUG)
+
+    return queue_listener, QueueHandler(queue)
+
+
+def logger_setup(logger: Logger, mode: Mode | None = None) -> QueueListener:
+    logger.propagate = False
+    logger.handlers.clear()
+
+    match mode:
+        case Mode.DEFAULT:
+            handler = SysLogHandler("/dev/log", SysLogHandler.LOG_LOCAL1)
+        case None:
+            handler = SysLogHandler("/dev/log", SysLogHandler.LOG_LOCAL1)
+        case _:
+            handler = StreamHandler()
+
+    formatter = Formatter("[%(levelname)s] %(threadName)s %(name)s: %(message)s")
+    handler.setFormatter(formatter)
+    queue_listener, queue_handler = queue_init(handler)
+    logger.addHandler(queue_handler)
+
+    match mode:
+        case Mode.DEFAULT:
+            logger.setLevel(INFO)
+        case Mode.DEBUG:
+            logger.setLevel(DEBUG)
 
     # User is responsible for stopping queue listener
     return queue_listener
 
 
-logger = getLogger(__name__)
-logger_setup(logger)
-
-
-def is_running(func: Callable):
-    @wraps(func)
-    def wrapper(self, *args, **kwargs):
-        if not self._is_running:
-            raise ServerNotRunningError()
-        return func(self, *args, **kwargs)
-
-    return wrapper
-
-
-# TODO: add ability to change enum variables through DBus interface
 # TODO: implement get functionality
 @dbus_interface(SERVICE.interface_name)
 class WallDaemon(GObject):
-    def __init__(self):
+    def __init__(self, mode: Mode | None = None):
         super().__init__()
-        self._is_running = False
-        self._timer_id = None
         self._current_index = 0
+        self._current_wallpaper_file = None
+
         self._logger = getLogger(__class__.__name__)
-        self.queue_listener = logger_setup(self._logger)
+        self.queue_listener = logger_setup(self._logger, mode)
 
         self.cancellable = Cancellable()
+        self._timer_id = None
+
         # 4 bytes hardware based random, used once for seed
         self._seed = urandom(4)
         self._rng = Random(self._seed)
@@ -95,21 +107,23 @@ class WallDaemon(GObject):
     ## DBUS INTERFACE METHODS ##
     ############################
 
-    @is_running
     def SetSchedule(self, schedule: Int, units: Str) -> Str:
         return self._set_schedule(schedule, units)
 
-    @is_running
     def SetFiles(self, files: List[Str]) -> Str:
         if len(files) == 0:
             raise NoFilesProvidedError()
 
-        self.config.files = files
+        valid_files = self._validate_files(files)
+
+        if not valid_files:
+            raise NoValidFilesProvidedError()
+
+        self.config.files = valid_files
         self._recalc_current_index(len(self.config.files))
 
         return "OK"
 
-    @is_running
     def SetShuffle(self, shuffle: Bool) -> Str:
         self.config.shuffle = shuffle
         if self.config.shuffle:
@@ -117,22 +131,21 @@ class WallDaemon(GObject):
 
         return "OK"
 
-    @is_running
     def GetInterfaces(self) -> List[Tuple[Str, List[Tuple[Str, Str]]]]:
         iface_indexes = list(index for index in range(len(self.config.ifaces)))
         return self._pack_interfaces(iface_indexes)
 
-    @is_running
     def SetVariableValue(self, iface_name: Str, var_name: Str, value: Str) -> Str:
-        iface_indexes = tuple(index for index in range(len(self.config.ifaces)) if iface_name == self.config.ifaces[index].name)
-        if len(iface_indexes) < 1:
+        iface = next((iface for iface in self.config.ifaces if iface.name == iface_name), None)
+        if not iface:
             raise InvalidInterfaceNameError()
 
-        index = iface_indexes[0]
-        var = self.config.ifaces[index].variables.get(var_name)
-        val = self._deduce_var_type(var, value)
+        var = iface.variables.get(var_name)
+
         if not var:
             raise VariableDoesNotExistError(var_name)
+
+        val = self._deduce_var_type(var, value)
 
         try:
             var.set_value(val)
@@ -144,12 +157,10 @@ class WallDaemon(GObject):
             self._logger.info(f"Set variable `{var_name}` value `{value}`")
             return "OK"
 
-    @is_running
     def GetActiveInterfaces(self) -> List[Tuple[Str, List[Tuple[Str, Str]]]]:
         iface_indexes = list(index for index in self.config.active_ifaces)
         return self._pack_interfaces(iface_indexes)
 
-    @is_running
     def ActivateInterface(self, name: Str) -> Str:
         if name not in (item.name for item in self.config.ifaces):
             raise InvalidInterfaceNameError()
@@ -162,7 +173,6 @@ class WallDaemon(GObject):
 
         return "OK"
 
-    @is_running
     def DeactivateInterface(self, name: Str) -> Str:
         if name not in (self.config.ifaces[index] for index in self.config.active_ifaces):
             return "Interface already inactive."
@@ -176,23 +186,17 @@ class WallDaemon(GObject):
 
         return "OK"
 
-    @is_running
     def GetCurrentWallpaperFilename(self) -> Str:
-        if self.config.shuffle:
-            if self._shuffle_indexes:
-                index = self._shuffle_indexes[self._current_index - 1]
-            else:
-                return "Wallpaper was not set yet."
+        if self._current_wallpaper_file:
+            return self._current_wallpaper_file
         else:
-            index = self._current_index
+            return "Wallpaper was not set yet."
 
-        return self.config.files[index]
-
-    @is_running
-    def ForceWallpaperChange(self) -> Str:
-        self._logger.info("Force wallpaper change.")
+    def ForceWallpaperChange(self, no_reset: bool =  False) -> Str:
+        self._logger.info(f"Force wallpaper change requested, no_reset={no_reset}.")
         self._set_next_wallpaper()
-        self._set_schedule(self.config.schedule, self.config.units.value)
+        if not no_reset:
+            self._set_schedule(self.config.schedule, self.config.units.value)
         return "OK"
 
     ###################
@@ -201,7 +205,6 @@ class WallDaemon(GObject):
 
     def run(self, config_path: str):
         self.config = parse_config(config_path)
-        self._is_running = True
         self._set_schedule(self.config.schedule, self.config.units.value)
 
         event_handler = ConfigEventHandler(self._on_config_created, self._on_config_modified)
@@ -209,12 +212,12 @@ class WallDaemon(GObject):
         self.observer.schedule(event_handler, config_path, event_filter=[FileCreatedEvent, FileModifiedEvent])
         self.observer.start()
 
-    def _update_schedule(self, config: Config):
+    def _update_schedule(self, config: Config) -> bool:
         _ = self._set_schedule(config.schedule, config.units.value)
         return SOURCE_REMOVE
 
     # TODO: probably should save config path and check for it in order to prevent misfires/misconfigures
-    def _on_config_created(self, event: FileCreatedEvent):
+    def _on_config_created(self, event: FileCreatedEvent) -> None:
         self._logger.info("Config have been created, applying...")
         try:
             config = parse_config(event.src_path)
@@ -230,7 +233,7 @@ class WallDaemon(GObject):
         else:
             self._logger.info("Config have been applied successfully.")
 
-    def _on_config_modified(self, event: FileModifiedEvent):
+    def _on_config_modified(self, event: FileModifiedEvent) -> None:
         self._logger.info("Config have been modified, updating...")
         try:
             config = parse_config(event.src_path)
@@ -273,7 +276,7 @@ class WallDaemon(GObject):
 
         return "Given interval is zero."
 
-    def _recalc_current_index(self, files_length: int):
+    def _recalc_current_index(self, files_length: int) -> None:
         self._current_index %= files_length
 
     def _generate_shuffle_indexes(self) -> List[Int]:
@@ -285,8 +288,7 @@ class WallDaemon(GObject):
 
         return indexes
 
-    @is_running
-    def _set_next_wallpaper(self):
+    def _set_next_wallpaper(self) -> None:
         if not self.config.files:
             raise NoFilesProvidedError()
         else:
@@ -299,23 +301,25 @@ class WallDaemon(GObject):
                 index = self._current_index
 
             task = Task.new(
-                source_object=self,
-                cancellable=self.cancellable,
-                callback=self._set_wallpaper_finish,
+                self,
+                self.cancellable,
+                self._set_wallpaper_finish,
+                index,
             )
 
+            # noinspection PyTypeChecker
             task.set_task_data(index)
             task.run_in_thread(self._set_wallpaper)
 
             self._current_index = (self._current_index + 1) % len(self.config.files)
 
-    def _set_wallpaper(self, task, source_object, _, cancellable):
+    def _set_wallpaper(self, task, source_object, _, cancellable) -> None:
         index = task.get_task_data()
         if index >= len(self.config.files):
             task.return_error(Error(message=f"Index was out of bounds: {index}, size={len(self.config.files)}"))
             return
-        try:
-            for interface_index in self.config.active_ifaces:
+        for interface_index in self.config.active_ifaces:
+            try:
                 if cancellable.is_cancelled() and task.return_error_if_cancelled():
                     return
 
@@ -327,16 +331,16 @@ class WallDaemon(GObject):
                 )
 
                 proc.communicate_utf8_async(cancellable=cancellable, callback=self._communicate_finish)
+            except Exception as e:
+                self._logger.error(
+                    f"Failed to set wallpaper for interface `{self.config.ifaces[interface_index].name}`.",
+                    exc_info=e
+                )
+                task.return_error(Error(message=f"{type(e)}: {e}"))
+            else:
+                task.return_boolean(True)
 
-            task.return_boolean(True)
-        except Exception as e:
-            self._logger.error(
-                f"Failed to set wallpaper for interface {self.config.ifaces[interface_index].name}.",
-                exc_info=e
-            )
-            task.return_error(Error(message=f"{type(e)}: {e}"))
-
-    def _communicate_finish(self, proc: Subprocess, result):
+    def _communicate_finish(self, proc: Subprocess, result) -> None:
         try:
             success, stdout, stderr = proc.communicate_utf8_finish(result)
 
@@ -354,12 +358,13 @@ class WallDaemon(GObject):
         except Exception as e:
             self._logger.error(f"Communication error: {e}")
 
-    def _set_wallpaper_finish(self, _, result):
+    def _set_wallpaper_finish(self, _, result, index: int) -> None:
         try:
             success = result.propagate_boolean()
 
             if success:
                 self._logger.info("Wallpaper set successfully.")
+                self._current_wallpaper_file = self.config.files[index]
 
         except Exception as e:
             self._logger.exception(f"Could not set wallpaper: {e}")
@@ -387,24 +392,67 @@ class WallDaemon(GObject):
         return ifaces
 
     def stop(self):
-        self.observer.stop()
-        self.observer.join()
+        if self.observer:
+            self.observer.stop()
+            self.observer.join()
         self.queue_listener.stop()
 
+    def _validate_files(self, files: List[Str]) -> List[Str]:
+        valid_files = []
+        for file in files:
+            filepath = Path(file).expanduser()
 
-def main(argv):
-    if len(argv) == 1:
-        config_path = expanduser("~/.config/walld/config.toml")
-    elif len(argv) == 2:
-        config_path = expanduser(argv[1])
-    else:
-        print("Wrong argument count.")
-        exit(1)
+            if not filepath.exists():
+                self._logger.warning(f"File does not exist: `{filepath}`, skipping ...")
+                continue
+
+            if filepath.is_dir():
+                self._logger.warning(f"Given path is a directory, skipping ...")
+                continue
+
+            mime = guess_type(filepath)[0]
+            if mime and mime.startswith("image/"):
+                valid_files.append(str(filepath))
+            elif mime:
+                self._logger.warning(f"File `{filepath}` mime type is `{mime}` which is not viable, skipping ...")
+            else:
+                self._logger.warning(f"Cannot guess file `{filepath}` mime type, skipping ...")
+
+        return valid_files
+
+
+def main():
+    config_path = Path("~/.config/walld/config.toml").expanduser()
+    mode = Mode.DEFAULT
+
+    parser = ArgumentParser(
+        description="WallD D-Bus server.",
+    )
+    parser.add_argument(
+        "-c",
+        "--config_file",
+        help="Path to TOML configuration file. Default is `~/.config/walld/config.toml`",
+    )
+    parser.add_argument(
+        "-m",
+        "--mode",
+        help="Run mode of the server, either `default` or `debug`.",
+        choices=["default", "debug"]
+    )
+
+    args = parser.parse_args()
+    if args.config_file:
+        config_path = Path(args.config_file).expanduser()
+    if args.mode:
+        mode = Mode.DEBUG if args.mode == "debug" else Mode.DEFAULT
 
     loop = EventLoop()
 
-    logger.info("Starting WallD DBus Service...")
-    service = WallDaemon()
+    logger = getLogger(__name__)
+    logger_setup(logger, mode)
+
+    logger.info(f"Starting WallD D-Bus service in {args.mode or 'default'} mode...")
+    service = WallDaemon(mode)
 
     try:
         SERVICE.message_bus.publish_object(SERVICE.object_path, service)
@@ -413,7 +461,7 @@ def main(argv):
         logger.info(f"Service published at: {SERVICE.service_name}")
         logger.info("Service is running. Press Ctrl+C to stop.")
 
-        service.run(config_path)
+        service.run(str(config_path))
         loop.run()
 
     except KeyboardInterrupt:
@@ -428,4 +476,4 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    main(argv)
+    main()

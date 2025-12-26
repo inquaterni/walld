@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
-import argparse
+#!/usr/bin/env python
+from argparse import ArgumentParser, RawTextHelpFormatter
 from dasbus.error import DBusError
 
 from config import SERVICE
@@ -36,9 +36,9 @@ from config import SERVICE
 
 
 def main():
-    parser = argparse.ArgumentParser(
+    parser = ArgumentParser(
         description="Command-line client for the WallD D-Bus service.\nManage wallpapers, schedules, and backend interfaces.",
-        formatter_class=argparse.RawTextHelpFormatter
+        formatter_class=RawTextHelpFormatter
     )
 
     subparsers = parser.add_subparsers(
@@ -84,9 +84,16 @@ def main():
         help="Show all available backend interfaces and their settings."
     )
 
-    subparsers.add_parser(
+    fc_parser = subparsers.add_parser(
         "force-change",
-        help="Force wallpaper change."
+        help="Force wallpaper change, resetting timer (can be disabled with `--no-reset` flag)."
+    )
+
+    fc_parser.add_argument(
+        "-nr",
+        "--no-reset",
+        action="store_true",
+        help="No timer reset."
     )
 
     set_help_text = (
@@ -100,7 +107,7 @@ def main():
         "set",
         help="Set configuration variables or enable/disable interfaces.",
         description=set_help_text,
-        formatter_class=argparse.RawTextHelpFormatter
+        formatter_class=RawTextHelpFormatter
     )
     set_parser.add_argument(
         "args",
@@ -152,7 +159,7 @@ def main():
             else:
                 print("No interfaces found.")
         elif args.command == "force-change":
-            result = proxy.ForceWallpaperChange()
+            result = proxy.ForceWallpaperChange(args.no_reset)
         elif args.command == "set":
             inputs = args.args
 
@@ -208,4 +215,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
