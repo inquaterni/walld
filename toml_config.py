@@ -341,7 +341,7 @@ class ConfigBuilder:
     def _iter_dir(self, p: Path, recursive: bool | None):
         for item in p.iterdir():
             if item.is_dir() and recursive:
-                self._iter_dir(item, recursive)
+                yield from self._iter_dir(item, recursive)
 
             mime = guess_type(item)[0]
             if mime and mime.startswith("image/"):

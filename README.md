@@ -83,6 +83,7 @@ schedule = 10          # integer; rotation interval
 units = "m"            # "s" / "m" / "h"
 shuffle = true         # randomize wallpaper order
 path = "~/Pictures/wallpapers"
+recursive = false      # (optional) recursively search for images in subdirectories
 active_interfaces = ["swaybg"]
 
 [Interfaces]
