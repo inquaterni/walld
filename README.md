@@ -10,7 +10,7 @@ The core daemon never talks directly to a specific compositor or desktop; instea
 - **Config‑driven**: Single TOML config controls schedule, shuffle, image source, and interfaces.
 - **Async wallpaper updates**: Uses GLib / Gio to run wallpaper commands off the main loop.
 - **CLI client**: `walld` command to inspect and control the running daemon.
-- **Config hot reloading**: Uses fs events library `watchdog` for config hot reloading capabilities
+- **Config hot reloading**: Uses the `watchdog` library to automatically reload configuration changes.
 
 ### Requirements
 
@@ -60,7 +60,7 @@ Or, if you prefer, you can still run the daemon directly:
 python server.py
 ```
 
-By default, the daemon expects to find config.toml in your `$HOME/.config/walld/config.toml`.
+By default, the daemon looks for the configuration file at `$HOME/.config/walld/config.toml`.
 To copy default config from repo you can run:
 
 ```bash
@@ -91,7 +91,7 @@ swaybg = ["swaybg", "-i", "%f", "--mode", "fill"]
 ```
 
 > [!NOTE]
-> `path` cannot lead to single file. Use directory path instead.
+> The `path` must be a directory, not a single file.
 
 The daemon walks the `path` directory and automatically picks all files that look like images.  
 When it’s time to change the wallpaper, it runs each **active interface** with the selected filename substituted into the argument list.
@@ -169,9 +169,12 @@ Available subcommands:
   - `walld set <iface>.<var> <value>`
   - `walld set <iface> enabled|disabled`
 - **`list-active`**: list only active interfaces.
+- **`pause [value] [s|m|h]`**: pause wallpaper rotation. If value is provided, pauses for that duration.
+- **`resume`**: resume wallpaper rotation.
+- **`force-change [-nr|--no-reset]`**: Force a wallpaper change immediately. Use `-nr` to prevent resetting the rotation timer.
 
 
-Examples:
+#### Examples:
 
 ```bash
 walld schedule 30 m
@@ -179,8 +182,26 @@ walld shuffle on
 walld files ~/Pictures/wallpapers/a.jpg ~/Pictures/wallpapers/b.jpg
 walld set swaybg enabled
 ```
+Pause for one hour
+```bash
+walld pause 1 h
+```
+After one hour, it automatically resumes. Can be resumed manually.
+
+Indefinite pause:
+```bash
+walld pause
+```
+Manual resume:
+```bash
+walld resume
+```
 
 ### Error Handling
 
 The daemon raises specific error types (e.g. `InvalidInterfaceNameError`, `NoFilesProvidedError`, `UnknownTimeUnitsError`, `VariableTypeError`) which are translated to D‑Bus errors.  
 The CLI prints D‑Bus `DBusError` messages and suggests checking whether the server is running if it can’t reach the service.
+
+## License
+
+WallD is licensed under the MIT License.

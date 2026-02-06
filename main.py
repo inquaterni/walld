@@ -54,6 +54,7 @@ def main():
     )
     schedule_parser.add_argument(
         "units",
+        default="s",
         choices=["s", "m", "h"],
         help="Time units (s=seconds, m=minutes, h=hours)",
     )
@@ -82,6 +83,31 @@ def main():
     subparsers.add_parser(
         "list",
         help="Show all available backend interfaces and their settings."
+    )
+
+    pause_parser = subparsers.add_parser(
+        "pause",
+        help="Pause wallpaper rotation"
+    )
+
+    pause_parser.add_argument(
+        "value",
+        type=int,
+        nargs="?",
+        help="Amount of time wallpaper rotation will be paused. If not set, pauses indefinitely until resumed."
+    )
+
+    pause_parser.add_argument(
+        "units",
+        nargs="?",
+        default="s",
+        choices=["s", "m", "h"],
+        help="Time units (s=seconds, m=minutes, h=hours).",
+    )
+
+    subparsers.add_parser(
+        "resume",
+        help="Resume wallpaper rotation."
     )
 
     fc_parser = subparsers.add_parser(
@@ -187,7 +213,10 @@ def main():
                 print("Error: Invalid number of arguments.")
                 print("Run 'walld set --help' to see usage examples.")
                 exit(1)
-
+        elif args.command == "pause":
+            result = proxy.Pause(args.value or 0, args.units or "s")
+        elif args.command == "resume":
+            result = proxy.Resume()
         elif args.command == "list-active":
             interfaces = proxy.GetActiveInterfaces()
             if interfaces and "ERROR:" not in interfaces[0]:

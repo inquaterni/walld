@@ -37,6 +37,7 @@ from errors import (
     NoValidFilesProvidedError,
 )
 from toml_config import parse_config, Constant, Var, ConfigEventHandler, ConfigError, Config
+from timer import Timer
 
 class Mode(Enum):
     DEFAULT = 0
@@ -93,7 +94,7 @@ class WallDaemon(GObject):
         self.queue_listener = logger_setup(self._logger, mode)
 
         self.cancellable = Cancellable()
-        self._timer_id = None
+        self._timer: Timer | None = None
 
         # 4 bytes hardware based random, used once for seed
         self._seed = urandom(4)
@@ -199,6 +200,23 @@ class WallDaemon(GObject):
             self._set_schedule(self.config.schedule, self.config.units.value)
         return "OK"
 
+    def Pause(self, schedule: Int, units: Str) -> Str:
+        self._logger.info("Pause requested.")
+
+        if schedule:
+            self._logger.info(f"\tPause interval: {schedule} {units}")
+            self._timer.pause(self._str2units(schedule, units) * 1000)
+        else:
+            self._timer.pause()
+
+        return "OK"
+
+    def Resume(self):
+        self._logger.info("Resuming timer...")
+        self._timer.resume()
+
+        return "OK"
+
     ###################
     ## CLASS METHODS ##
     ###################
@@ -250,10 +268,26 @@ class WallDaemon(GObject):
             self._logger.info("Config have been updated successfully.")
 
     def _set_schedule(self, schedule: Int, units: Str) -> Str:
-        if self._timer_id:
-            source_remove(self._timer_id)
-            self._timer_id = None
+        if self._timer:
+            self._timer.stop()
+            self._timer = None
 
+        timeout = self._str2units(schedule, units)
+
+        def timer_callback():
+            self._logger.info("Timeout reached, setting next wallpaper")
+            self._set_next_wallpaper()
+            return SOURCE_CONTINUE
+
+        if timeout > 0:
+            self._timer = Timer.start_seconds(timeout, timer_callback)
+            self._logger.info(f"Schedule set for {schedule} {units}.")
+            return "OK"
+
+        return "Given interval is zero."
+
+    @staticmethod
+    def _str2units(schedule: Int, units: Str):
         match units:
             case "s":
                 timeout = schedule
@@ -263,18 +297,7 @@ class WallDaemon(GObject):
                 timeout = schedule * 3600
             case _:
                 raise UnknownTimeUnitsError()
-
-        def timer_callback():
-            self._logger.info("Timeout reached, setting next wallpaper")
-            self._set_next_wallpaper()
-            return SOURCE_CONTINUE
-
-        if timeout > 0:
-            self._timer_id = timeout_add_seconds(timeout, timer_callback)
-            self._logger.info(f"Schedule set for {schedule} {units}.")
-            return "OK"
-
-        return "Given interval is zero."
+        return timeout
 
     def _recalc_current_index(self, files_length: int) -> None:
         self._current_index %= files_length

@@ -1,3 +1,5 @@
-.idea
-__pycache__
-pyrightconfig.json
+.idea/
+__pycache__/
+build/
+*.egg-info/
+pyright*
