@@ -9,6 +9,8 @@ units = "m" # can also be m or s
 shuffle = true
 ## Here only directories supported!
 path = "~/Pictures/wallpapers/"
+## Flag detemining whether to walk into subdirectories or not. Default `false` (None)
+# recursive = true
 ## Here you choose what interfaces is used from program startup, can be empty, in that case daemon will just sleep
 ## until user activates at least one of accessible interface declared in [Interfaces section]
 active_interfaces = ["hyprpanel"]
@@ -27,6 +29,11 @@ args = [
     "--transition-fps", "%transition_fps",
     "%f"
 ]
+## Post-hook declaration, can be either a list or a list of lists. Hooks are aware of all variables defined in interface
+## Same applies for `pre_hook`.
+#post_hook = [["matugen", "image", "%f"]]
+## ***** BOTH ARE VALID *****
+#post_hook = ["matugen", "image", "%f"]
 ## Mutable variable, can be const
 [Interfaces.swww.variables.transition_fps]
 value = 30
@@ -42,3 +49,18 @@ current = "grow"
 options = ["grow", "wipe", "outer"]
 ## TODO: Add support for that :)
 ##random = true
+
+## Hooks can also be delared in global scope, syntax: <interface_name> = <hooks>
+## NOTE: hook lists do NOT exclude identical lists, so DRY.
+## ORDERING: local hooks are executed first, then go global ones.
+#[PostHooks]
+#swww = [["matugen", "image", "%f"]]
+# hyprpanel = [[]] # or []
+## To add global hook to every interface
+## NOTE: global hooks is WIP, so bugs are innevitable
+## It's better to NOT use any varables for global hook, but `%f`
+#"*" = [["lkbnkjn", "lknlkn"]]
+#"*" = [[]]
+#[PreHooks]
+#hyprpanel = [[]] # or []
+## Same as `PostHooks` ...

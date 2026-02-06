@@ -1,14 +1,14 @@
 #!/usr/bin/env python
+import traceback
 from argparse import ArgumentParser
 from enum import Enum
-from functools import wraps
 # TODO: 1. Handle D-Bus connection failures
 #       2. Provide status information via D-Bus properties
 from mimetypes import guess_type
 from pathlib import Path
 from queue import Queue
 from tomllib import TOMLDecodeError
-from typing import Tuple, Any
+from typing import Tuple, Any, Callable
 
 from dasbus.server.interface import dbus_interface
 from dasbus.typing import Str, Int, List, Bool
@@ -17,8 +17,8 @@ from watchdog.events import FileCreatedEvent, FileModifiedEvent
 from watchdog.observers import Observer
 
 require_version("Gio", "2.0")
-from gi.repository.Gio import Subprocess, SubprocessFlags, io_error_quark, IOErrorEnum, Cancellable, Task
-from gi.repository.GLib import Error, source_remove, SOURCE_CONTINUE, timeout_add_seconds, idle_add, SOURCE_REMOVE
+from gi.repository.Gio import Subprocess, SubprocessFlags, io_error_quark, IOErrorEnum, Cancellable
+from gi.repository.GLib import Error, SOURCE_CONTINUE, idle_add, SOURCE_REMOVE
 from gi.repository.GObject import GObject
 from dasbus.loop import EventLoop
 from logging import Logger, getLogger, Formatter, DEBUG, StreamHandler, INFO, Handler
@@ -323,74 +323,60 @@ class WallDaemon(GObject):
             else:
                 index = self._current_index
 
-            task = Task.new(
-                self,
-                self.cancellable,
-                self._set_wallpaper_finish,
-                index,
-            )
-
-            # noinspection PyTypeChecker
-            task.set_task_data(index)
-            task.run_in_thread(self._set_wallpaper)
-
             self._current_index = (self._current_index + 1) % len(self.config.files)
+            self._set_wallpaper_pre(index)
 
-    def _set_wallpaper(self, task, source_object, _, cancellable) -> None:
-        index = task.get_task_data()
-        if index >= len(self.config.files):
-            task.return_error(Error(message=f"Index was out of bounds: {index}, size={len(self.config.files)}"))
-            return
-        for interface_index in self.config.active_ifaces:
-            try:
-                if cancellable.is_cancelled() and task.return_error_if_cancelled():
-                    return
+    def _set_wallpaper_pre(self, index: int) -> None:
+        target_file = self._target_file(index)
+        commands = []
 
-                proc = Subprocess.new(
-                    self.config.ifaces[interface_index].formatted_args(
-                        self.config.files[index]
-                    ),
-                    SubprocessFlags.STDERR_PIPE | SubprocessFlags.STDOUT_PIPE
-                )
+        for i in self.config.active_ifaces:
+            cmds = self.config.ifaces[i].formatted_pre_hook(target_file)
+            if cmds: commands.extend(cmds)
 
-                proc.communicate_utf8_async(cancellable=cancellable, callback=self._communicate_finish)
-            except Exception as e:
-                self._logger.error(
-                    f"Failed to set wallpaper for interface `{self.config.ifaces[interface_index].name}`.",
-                    exc_info=e
-                )
-                task.return_error(Error(message=f"{type(e)}: {e}"))
-            else:
-                task.return_boolean(True)
+        # noinspection PyTypeChecker
+        self._run_command_sequence(
+            commands,
+            on_success=lambda: self._set_wallpaper(index),
+            on_failure=lambda exc: self._logger.error(f"Communication 'pre' failed: {exc}"),
+            on_cancellation=lambda: self._logger.error(f"Communication cancelled.")
+        )
 
-    def _communicate_finish(self, proc: Subprocess, result) -> None:
-        try:
-            success, stdout, stderr = proc.communicate_utf8_finish(result)
+    def _set_wallpaper(self, index: int) -> None:
+        target_file = self._target_file(index)
+        commands = []
 
-            if success:
-                self._logger.info("Communication finished successfully.")
-            if stdout:
-                self._logger.info(f"Subprocess output: '{stdout.strip()}'")
-            if stderr:
-                self._logger.error(f"Subprocess error output: '{stderr.strip()}'")
-        except Error as e:
-            if e.matches(io_error_quark(), IOErrorEnum.CANCELLED):
-                self._logger.error("Communication canceled.")
-            else:
-                self._logger.error(f"Communication error: {e}")
-        except Exception as e:
-            self._logger.error(f"Communication error: {e}")
+        for i in self.config.active_ifaces:
+            cmd = self.config.ifaces[i].formatted_args(target_file)
+            commands.append(cmd)
 
-    def _set_wallpaper_finish(self, _, result, index: int) -> None:
-        try:
-            success = result.propagate_boolean()
+        # noinspection PyTypeChecker
+        self._run_command_sequence(
+            commands,
+            on_success=lambda: self._set_wallpaper_post(index),
+            on_failure=lambda exc : self._logger.error(f"Communication 'args' failed: {traceback.format_exc()}"),
+            on_cancellation=lambda: self._logger.error(f"Communication cancelled.")
+        )
 
-            if success:
-                self._logger.info("Wallpaper set successfully.")
-                self._current_wallpaper_file = self.config.files[index]
+    def _set_wallpaper_post(self, index: int):
+        target_file = self._target_file(index)
+        commands = []
 
-        except Exception as e:
-            self._logger.exception(f"Could not set wallpaper: {e}")
+        for i in self.config.active_ifaces:
+            cmd = self.config.ifaces[i].formatted_post_hook(target_file)
+            commands.append(cmd)
+
+        # noinspection PyTypeChecker
+        self._run_command_sequence(
+            commands,
+            on_success=lambda: self._set_wallpaper_finish(index),
+            on_failure=lambda exc: self._logger.error(f"Communication 'post' failed: {exc}"),
+            on_cancellation=lambda: self._logger.error(f"Communication cancelled.")
+        )
+
+    def _set_wallpaper_finish(self, index: int) -> None:
+        self._logger.info("Wallpaper set successfully.")
+        self._current_wallpaper_file = self.config.files[index]
 
     @staticmethod
     def _deduce_var_type(var: Var, value: Str) -> Any:
@@ -400,6 +386,12 @@ class WallDaemon(GObject):
             raise VariableTypeError(type(var.value()), type(value))
         else:
             return val
+
+    def _target_file(self, index):
+        if index >= len(self.config.files):
+            raise IndexError(f"Index was out of bounds: {index}, size={len(self.config.files)}")
+        target_file = self.config.files[index]
+        return target_file
 
     # TODO: make normal packets for more flexible messaging
     def _pack_interfaces(self, iface_indexes: List[int]) -> List[Tuple[Str, List[Tuple[Str, Str]]]]:
@@ -442,6 +434,55 @@ class WallDaemon(GObject):
                 self._logger.warning(f"Cannot guess file `{filepath}` mime type, skipping ...")
 
         return valid_files
+
+    def _run_command_sequence(self,
+                              commands: List[List[Str]],
+                              on_success: Callable[..., Any],
+                              on_failure: Callable[[Exception, ...], Any],
+                              on_cancellation: Callable[..., Any],
+                              *args, **kwargs) -> Any:
+        if not commands:
+            return on_success(*args, **kwargs)
+
+        command = commands[0]
+        remainder = commands[1:]
+
+        if not command:
+            return self._run_command_sequence(remainder, on_success, on_failure, on_cancellation, *args, **kwargs)
+
+        try:
+            if self.cancellable.is_cancelled():
+                return on_cancellation(*args, **kwargs)
+
+            def _sequence_run_step(source_proc: Subprocess, result) -> None:
+                try:
+                    success, stdout, stderr = source_proc.communicate_utf8_finish(result)
+
+                    if success:
+                        self._logger.info("Communication finished successfully.")
+                    if stdout:
+                        self._logger.info(f"Subprocess output: '{stdout.strip()}'")
+                    if stderr:
+                        self._logger.error(f"Subprocess error output: '{stderr.strip()}'")
+                    if not source_proc.get_successful():
+                        return on_failure(Exception(f"Command '{command}' exited with status {source_proc.get_exit_status()}"), *args, **kwargs)
+                except Error as e:
+                    if e.matches(io_error_quark(), IOErrorEnum.CANCELLED):
+                        return on_cancellation(*args, **kwargs)
+                    else:
+                        return on_failure(e, *args, **kwargs)
+                except Exception as e:
+                    return on_failure(e, *args, **kwargs)
+                else:
+                    return self._run_command_sequence(remainder, on_success, on_failure, on_cancellation, *args, **kwargs)
+
+            proc = Subprocess.new(
+                command,
+                SubprocessFlags.STDOUT_PIPE | SubprocessFlags.STDERR_PIPE
+            )
+            proc.communicate_utf8_async(None, cancellable=self.cancellable, callback=_sequence_run_step)
+        except Exception as e:
+            return on_failure(e, *args, **kwargs)
 
 
 def main():

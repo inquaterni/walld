@@ -118,6 +118,43 @@ type = { current = "wipe", options = ["grow", "wipe", "fade"] }
 At runtime, each argument beginning with `%` (other than `%f`) is treated as a variable name and resolved via the interface’s variable map (`Mutable`, `Constant`, or `Enumeration`), allowing you to reuse the same command template with different values.  
 This is how WallD stays backend‑agnostic: the daemon only knows about interfaces and variables, not specific compositors.
 
+### Hooks (WIP)
+
+> [!NOTE]
+> Hooks are currently a work in progress feature.
+
+You can configure `pre_hook` and `post_hook` actions for interfaces to run commands before or after the wallpaper change. (Verbose form only)
+
+Hooks can be defined inside an interface block:
+
+```toml
+[Interfaces.swww]
+# ... args ...
+# Single command hook:
+post_hook = ["notify-send", "Wallpaper changed"]
+
+# OR list of commands:
+# post_hook = [
+#   ["notify-send", "Wallpaper changed"],
+#   ["notify-send", "%f"]
+# ]
+```
+
+Hooks have access to the interface's variables (like `%f` for the file path).
+
+**Global Scope Hooks**
+
+You can also define hooks in the global `[PreHooks]` and `[PostHooks]` tables. These allow you to add hooks to interfaces without modifying the interface's main definition, or to apply hooks to *all* interfaces. Can be useful if your interface is declared in **simple form**
+
+```toml
+[PostHooks]
+# Add a hook specifically to the 'swww' interface
+swww = [["matugen", "image", "%f"]]
+```
+
+> [!WARNING]
+> **DRY (Don't Repeat Yourself)**: Hook lists are (for now) **not** deduplicated. If you define identical hooks in multiple places (or list them multiple times), they will be executed multiple times.
+
 ### Running the Daemon
 
 From the repo root:
