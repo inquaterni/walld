@@ -338,7 +338,7 @@ class WallDaemon(GObject):
         self._run_command_sequence(
             commands,
             on_success=lambda: self._set_wallpaper(index),
-            on_failure=lambda exc: self._logger.error(f"Communication 'pre' failed: {exc}"),
+            on_failure=lambda exc: self._logger.error(f"Communication 'pre' failed: {traceback.format_exc()}"),
             on_cancellation=lambda: self._logger.error(f"Communication cancelled.")
         )
 

@@ -115,30 +115,34 @@ class Interface:
     def formatted_pre_hook(self, img_file: str) -> List[List[str]]:
         result = []
         for hook_command in self.pre_hook:
+            args = []
             for arg in hook_command:
                 if "%" not in arg:
-                    result.append(arg)
+                    args.append(arg)
                 else:
                     var_name = arg[1:]
                     if var_name == "f":
-                        result.append(img_file)
+                        args.append(img_file)
                     elif var_name in self.variables:
-                        result.append(str(self.variables[var_name].value()))
+                        args.append(str(self.variables[var_name].value()))
+            result.append(args)
 
         return result
 
     def formatted_post_hook(self, img_file: str) -> List[List[str]]:
         result = []
         for hook_command in self.post_hook:
+            args = []
             for arg in hook_command:
                 if "%" not in arg:
-                    result.append(arg)
+                    args.append(arg)
                 else:
                     var_name = arg[1:]
                     if var_name == "f":
-                        result.append(img_file)
+                        args.append(img_file)
                     elif var_name in self.variables:
-                        result.append(str(self.variables[var_name].value()))
+                        args.append(str(self.variables[var_name].value()))
+            result.append(args)
 
         return result
 
